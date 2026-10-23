@@ -1,0 +1,4 @@
+*.bat text eol=crlf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf

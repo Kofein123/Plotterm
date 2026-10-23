@@ -1,0 +1,23 @@
+{
+  "name": "plotterm",
+  "version": "1.0.0",
+  "description": "Управление рукописным плоттером на GRBL из браузера: текст → почерк → G-код → печать",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "start": "node scripts/serve.mjs 8080 --open",
+    "serve": "node scripts/serve.mjs 8080",
+    "test": "node --test tests/core.test.ts tests/machine.test.ts",
+    "fonts": "node scripts/build-fonts.mjs",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

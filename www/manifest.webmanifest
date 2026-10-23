@@ -1,0 +1,13 @@
+{
+  "name": "Plotterm — рукописный плоттер",
+  "short_name": "Plotterm",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#e9e6df",
+  "theme_color": "#1d3c8f",
+  "lang": "ru",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
