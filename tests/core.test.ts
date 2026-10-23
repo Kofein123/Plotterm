@@ -13,7 +13,7 @@ import type { Calibration, PaperSettings, PenSettings, SpeedSettings, Typography
 
 export const paper: PaperSettings = { template: 'a4', width: 210, height: 297, marginTop: 15, marginBottom: 15, marginLeft: 20, marginRight: 15, blankLineStep: 9, cell: 5, gridLineCells: 2, rulePitch: 8, side: 'right', rotate180: false, startLine: 1 };
 export const typo: TypographySettings = { fontId: 'gost-a', xHeight: 3, slant: 10, letterSpacing: 1, wordSpacing: 1, align: 'left', hyphenate: true, indent: 10, liveliness: 2, seed: 1 };
-export const pen: PenSettings = { pressure: 0.4, zDownFeed: 1500, dwellMs: 0 };
+export const pen: PenSettings = { pressure: 0.4, zDownFeed: 1500, dwellMs: 0, zDownRapid: false, hopLift: 0, hopDistance: 6 };
 export const speed: SpeedSettings = { profile: 'normal', customFeed: 4000, travelFeed: 0, joinTolerance: 0.15, simplify: 0.05, park: 'zero' };
 export const calib: Calibration = { ...DEFAULT_CALIBRATION, penSet: true, upZ: 2, zeroSet: true, cornerSet: true, corner: [210, -297] };
 
@@ -130,4 +130,16 @@ test('протокол GRBL', () => {
   assert.equal(classify("Grbl 1.1h ['$' for help]").type, 'welcome');
   const st = classify('$110=12000.000');
   assert.equal(st.type, 'setting');
+});
+
+test('низкий подъём между буквами внутри строки', () => {
+  const r = layoutText({ text: 'Быстро пишем строку', font: BUILTIN_FONTS[0], typo, paper });
+  const base = { strokes: r.pages[0].strokes, pageW: 210, pageH: 297, rotate180: false, frame: sheetFrame(calib), calib, speed, limits: DEFAULT_LIMITS, dryRun: false, reorder: true, title: 't' };
+  const slow = buildPlan({ ...base, pen });
+  const fast = buildPlan({ ...base, pen: { ...pen, hopLift: 0.8, zDownRapid: true } });
+  assert.ok(fast.gcode.includes('G0 Z0.8'));
+  assert.ok(fast.gcode.some((l) => l === 'G0 Z-0.4'));
+  assert.ok(fast.estSeconds < slow.estSeconds * 0.9, `${fast.estSeconds} vs ${slow.estSeconds}`);
+  // после последнего штриха — полный подъём
+  assert.equal(fast.gcode[fast.gcode.length - 2], 'G0 Z2');
 });

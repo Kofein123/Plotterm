@@ -184,6 +184,8 @@ export class JobRunner {
         }
         if (this.status.peek() !== 'pausing')
             return;
+        // между буквами ручка могла быть поднята низко — на паузе поднимаем полностью
+        this.machine.enqueue(`G0 Z${this.hooks.upZ().toFixed(2)}`, { quiet: true });
         this.status.value = 'paused';
         this.message.value = 'Пауза. Ручка поднята. Можно поправить лист или ручку.';
     }

@@ -29,6 +29,9 @@ export function fromCustom(rec: CustomFontRecord, all: StrokeFont[] = BUILTIN_FO
   const base = all.find((f) => f.id === rec.baseFontId) ?? BUILTIN_FONTS[0];
   const glyphs = new Map<string, GlyphData[]>();
   for (const [ch, vs] of Object.entries(rec.glyphs)) if (vs.length) glyphs.set(ch, vs);
+  // казахские буквы, ё и √ — достраиваем из своих же букв, чтобы стиль не смешивался
+  const metrics = { xHeight: CUSTOM_X_HEIGHT, capHeight: CUSTOM_X_HEIGHT * (base.capHeight / base.xHeight), descender: CUSTOM_X_HEIGHT * (base.descender / base.xHeight) };
+  synthesizeKazakh(glyphs, metrics);
   return {
     id: rec.id,
     name: rec.name,

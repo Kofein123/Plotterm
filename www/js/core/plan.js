@@ -129,29 +129,51 @@ export function buildPlan(inp) {
     const vDraw = feed / 60;
     const vTravel = (speed.travelFeed > 0 ? Math.min(speed.travelFeed, limits.rapid) : limits.rapid) / 60;
     const a = Math.max(100, limits.accel);
-    const zTravel = Math.abs(z.up - z.down);
-    const zTime = zTravel / (Math.min(limits.zRate, 3000) / 60) + 2 * Math.sqrt(zTravel / Math.max(50, limits.zAccel));
-    const zDownTime = zTravel / (zFeed / 60) + Math.sqrt(zTravel / Math.max(50, limits.zAccel));
+    const dir = inp.calib.upZ >= 0 ? 1 : -1;
+    const zRate = Math.max(50, limits.zRate) / 60; // мм/с
+    const zAcc = Math.max(20, limits.zAccel);
+    /** время хода по Z на расстояние d со скоростью v (трапеция) */
+    const zMove = (d, v) => {
+        d = Math.abs(d);
+        if (d < 1e-6)
+            return 0;
+        const dAcc = (v * v) / zAcc;
+        return d >= dAcc ? d / v + v / zAcc : 2 * Math.sqrt(d / zAcc);
+    };
+    // низкий подъём: только для коротких переездов в пределах строки
+    const hop = Math.abs(pen.hopLift) > 0.05 ? dir * Math.min(Math.abs(pen.hopLift), Math.abs(z.up)) : z.up;
+    const useHop = hop !== z.up && pen.hopDistance > 0;
+    let tDraw = 0, tTravel = 0, tPen = 0;
+    let curZ = z.up;
     joined.forEach((s, si) => {
         strokeTime.push(t);
         strokeStart.push(gcode.length);
         const [x0, y0] = paperToWork(frame, s.pts[0], s.pts[1]);
         const travel = first ? 0 : Math.hypot(s.pts[0] - px, s.pts[1] - py);
         travelLength += travel;
-        t += travel / vTravel + (travel > 0 ? 2 * Math.sqrt(travel / a) : 0);
+        const tt = travel / vTravel + (travel > 0 ? 2 * Math.sqrt(travel / a) : 0);
+        t += tt;
+        tTravel += tt;
         if (speed.travelFeed > 0)
             emit(`G1 X${fmt(x0)} Y${fmt(y0)} F${Math.round(Math.min(speed.travelFeed, limits.rapid))}`, si);
         else
             emit(`G0 X${fmt(x0)} Y${fmt(y0)}`, si);
         if (!inp.dryRun) {
-            emit(`G1 Z${fmt(z.down)} F${Math.round(zFeed)}`, si);
+            if (pen.zDownRapid)
+                emit(`G0 Z${fmt(z.down)}`, si);
+            else
+                emit(`G1 Z${fmt(z.down)} F${Math.round(zFeed)}`, si);
             if (pen.dwellMs > 0)
                 emit(`G4 P${fmt(pen.dwellMs / 1000)}`, si);
+            const td = zMove(curZ - z.down, pen.zDownRapid ? zRate : Math.min(zRate, zFeed / 60)) + pen.dwellMs / 1000;
+            t += td;
+            tPen += td;
+            curZ = z.down;
         }
-        t += zDownTime + pen.dwellMs / 1000;
         let lx = fmt(x0), ly = fmt(y0);
         let firstMove = true;
         let prevAngle = null;
+        let tStroke = 0;
         for (let j = 2; j < s.pts.length; j += 2) {
             const [x, y] = paperToWork(frame, s.pts[j], s.pts[j + 1]);
             const fx = fmt(x), fy = fmt(y);
@@ -168,24 +190,34 @@ export function buildPlan(inp) {
             firstMove = false;
             const seg = Math.hypot(s.pts[j] - s.pts[j - 2], s.pts[j + 1] - s.pts[j - 1]);
             drawLength += seg;
-            t += seg / vDraw;
+            tStroke += seg / vDraw;
             const ang = Math.atan2(s.pts[j + 1] - s.pts[j - 1], s.pts[j] - s.pts[j - 2]);
             if (prevAngle !== null) {
                 let d = Math.abs(ang - prevAngle);
                 if (d > Math.PI)
                     d = 2 * Math.PI - d;
                 // торможение на поворотах: примерно v/a на резкий угол
-                t += (vDraw / a) * (d / Math.PI) * 1.2;
+                tStroke += (vDraw / a) * (d / Math.PI) * 1.2;
             }
             prevAngle = ang;
             lx = fx;
             ly = fy;
         }
-        t += 2 * (vDraw / a);
-        emit(`G0 Z${fmt(z.up)}`, si);
-        t += zTime / 2;
-        px = s.pts[s.pts.length - 2];
-        py = s.pts[s.pts.length - 1];
+        tStroke += 2 * (vDraw / a);
+        t += tStroke;
+        tDraw += tStroke;
+        // подъём: низкий, если следующий штрих близко и в той же строке
+        const next = joined[si + 1];
+        const ex = s.pts[s.pts.length - 2], ey = s.pts[s.pts.length - 1];
+        const short = useHop && !inp.dryRun && next && next.line === s.line && Math.hypot(next.pts[0] - ex, next.pts[1] - ey) <= pen.hopDistance;
+        const liftTo = short ? hop : z.up;
+        emit(`G0 Z${fmt(liftTo)}`, si);
+        const tu = inp.dryRun ? 0 : zMove(liftTo - curZ, zRate);
+        t += tu;
+        tPen += tu;
+        curZ = liftTo;
+        px = ex;
+        py = ey;
         first = false;
     });
     emit(`G0 Z${fmt(z.up)}`, -1);
@@ -208,6 +240,9 @@ export function buildPlan(inp) {
         penLifts: joined.length,
         estSeconds: t * factor,
         strokeTime: strokeTime.map((x) => x * factor),
+        timeDraw: tDraw * factor,
+        timeTravel: tTravel * factor,
+        timePen: tPen * factor,
     };
 }
 /** Длина ломаных (для статистики). */

@@ -1,6 +1,7 @@
 import { h } from '../dom.ts';
 import { app } from '../../app/state.ts';
-import { Field, NumInput, Section, Segmented, Select, Slider, Toggle, bind, Icon } from '../components.tsx';
+import { Btn, Field, NumInput, Section, Segmented, Select, Slider, Toggle, bind, Icon } from '../components.tsx';
+import { importFont, importBusy } from './HandTab.tsx';
 
 export function FontTab() {
   const t = app.typo;
@@ -15,6 +16,9 @@ export function FontTab() {
           Плоттер рисует линией, поэтому нужны однолинейные шрифты. Встроены ГОСТ А и Б (кириллица, латиница, казахские буквы).
           Свой почерк — на вкладке «Мой почерк».
         </div>
+        <Btn small kind="primary" onClick={() => importFont()} disabled={() => !!importBusy.value}>
+          <Icon name="upload" size={14} /> {() => importBusy.value ?? 'Загрузить свой шрифт (.ttf .otf .woff .svg)'}
+        </Btn>
         <Field label="Высота строчной буквы" hint="2–6 мм; в тетради обычно 2,5–3,5">
           <Slider min={1.5} max={7} step={0.1} value={bind(t, 'xHeight').get} onInput={bind(t, 'xHeight').set} format={(v) => v.toFixed(1) + ' мм'} />
         </Field>

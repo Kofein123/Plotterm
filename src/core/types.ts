@@ -96,10 +96,16 @@ export interface PenSettings {
   zDownFeed: number;
   /** пауза после опускания, мс */
   dwellMs: number;
+  /** опускать на максимальной скорости оси Z (G0), а не zDownFeed */
+  zDownRapid: boolean;
+  /** низкий подъём для коротких переездов внутри строки, мм над бумагой (0 — всегда полный подъём) */
+  hopLift: number;
+  /** до какой длины переезд считается коротким, мм */
+  hopDistance: number;
 }
 
 export interface SpeedSettings {
-  profile: 'draft' | 'normal' | 'neat' | 'custom';
+  profile: 'turbo' | 'draft' | 'normal' | 'neat' | 'custom';
   customFeed: number;
   /** холостой ход: 0 = G0 (максимальная скорость платы) */
   travelFeed: number;
@@ -112,6 +118,7 @@ export interface SpeedSettings {
 }
 
 export const SPEED_PROFILES: Record<Exclude<SpeedSettings['profile'], 'custom'>, { name: string; feed: number; hint: string }> = {
+  turbo: { name: 'Турбо', feed: 9000, hint: 'гелевая ручка, проверить тестом' },
   draft: { name: 'Черновик', feed: 6000, hint: 'быстрые заметки' },
   normal: { name: 'Обычный', feed: 4000, hint: 'конспект' },
   neat: { name: 'Аккуратный', feed: 2500, hint: 'чистовик, сдача' },

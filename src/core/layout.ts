@@ -60,7 +60,8 @@ export function layoutText(inp: LayoutInput): LayoutResult {
   const s = typo.xHeight / font.xHeight;
   const capMm = font.capHeight * s;
   const descMm = font.descender * s;
-  const letterGap = font.letterSpacing * s * typo.letterSpacing;
+  // у импортированных шрифтов собственный интервал 0 — тогда регулятор работает от 30 % x-высоты
+  const letterGap = (font.letterSpacing + (typo.letterSpacing - 1) * (font.letterSpacing || font.xHeight * 0.3)) * s;
   const spaceW = font.wordSpacing * s * typo.wordSpacing;
   const live = Math.max(0, Math.min(10, typo.liveliness)) / 10;
   const r = rng(typo.seed);

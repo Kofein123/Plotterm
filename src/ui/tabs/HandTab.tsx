@@ -7,6 +7,7 @@ import type { CustomFontRecord, GlyphData } from '../../fonts/types.ts';
 import { Btn, Field, Icon, NumInput, Note, Section, Select, Segmented } from '../components.tsx';
 import { downloadText, pickFile, toast } from '../../app/notify.ts';
 import { importSvgFont } from '../../io/svgfont.ts';
+import { importOutlineFont } from '../../io/outlinefont.ts';
 
 const GROUPS: Record<string, string> = {
   lower: 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя',
@@ -226,12 +227,18 @@ async function exportFont() {
   downloadText(`${r.name}.plotterm-font.json`, JSON.stringify(r), 'application/json');
 }
 
-async function importFont() {
-  const f = await pickFile('.json,.svg');
+export const importBusy = signal<string | null>(null);
+
+export async function importFont() {
+  const f = await pickFile('.ttf,.otf,.woff,.woff2,.svg,.json,font/ttf,font/otf,font/woff,font/woff2');
   if (!f) return;
   try {
     let rec: CustomFontRecord;
-    if (f.name.toLowerCase().endsWith('.svg')) {
+    const lower = f.name.toLowerCase();
+    if (/\.(ttf|otf|woff2?)$/.test(lower)) {
+      importBusy.value = 'Читаю шрифт…';
+      rec = await importOutlineFont(f, (d, t) => (importBusy.value = `Перевожу буквы в линии: ${d} из ${t}`));
+    } else if (lower.endsWith('.svg')) {
       rec = importSvgFont(await f.text(), f.name.replace(/\.svg$/i, ''));
     } else {
       rec = JSON.parse(await f.text());
@@ -240,16 +247,30 @@ async function importFont() {
     }
     await saveCustomFont(rec);
     editing.value = structuredClone(rec);
-    toast(`Шрифт «${rec.name}» добавлен: ${Object.keys(rec.glyphs).length} символов.`, 'ok');
+    app.typo.patch({ fontId: rec.id, letterSpacing: 1, wordSpacing: 1, ...(/\.(ttf|otf|woff2?)$/.test(lower) ? { slant: 0 } : {}) });
+    const cyr = [...'абвгдежзийклмнопрстуфхцчшщъыьэюя'].filter((c) => rec.glyphs[c]).length;
+    toast(
+      `Шрифт «${rec.name}» добавлен и выбран: ${Object.keys(rec.glyphs).length} символов` +
+        (cyr < 32 ? `, кириллицы ${cyr}/32 — недостающие буквы возьмутся из ГОСТ.` : ', вся кириллица на месте.'),
+      cyr < 20 ? 'warn' : 'ok',
+      9000,
+    );
   } catch (e: any) {
     toast('Не удалось импортировать: ' + (e?.message ?? e), 'err');
+  } finally {
+    importBusy.value = null;
   }
 }
 
 export function HandTab() {
   return (
     <div class="tab">
-      <Section title="Мой почерк" aside={<Btn small kind="primary" onClick={newFont}>Новый</Btn>}>
+      <Section title="Мой почерк" aside={<Btn small onClick={newFont}>Нарисовать новый</Btn>}>
+        {() => (importBusy.value ? <Note kind="info">{importBusy.value}</Note> : null)}
+        <div class="muted small">
+          Обычный шрифт (.ttf/.otf/.woff, например сделанный из вашего почерка в Calligraphr) программа сама переведёт
+          в линию по центру штриха — плоттер пишет одной линией, без обводки контура.
+        </div>
         <div class="muted small">
           Единственный способ, чтобы конспект выглядел написанным вами: нарисуйте буквы мышью или стилусом, каждую 3–5 раз —
           при печати варианты чередуются. Недостающие символы возьмутся из базового шрифта.
@@ -274,8 +295,8 @@ export function HandTab() {
           ) : null
         }
         <div class="row wrap">
-          <Btn small kind="ghost" onClick={importFont} title="Файл .json от Plotterm или однолинейный SVG-шрифт (Hershey Text, EMS)">
-            <Icon name="upload" size={14} /> Импорт шрифта
+          <Btn small kind="primary" onClick={importFont} disabled={() => !!importBusy.value} title=".ttf, .otf, .woff — любой шрифт; .svg — однолинейный (Hershey Text, EMS); .json — экспорт Plotterm">
+            <Icon name="upload" size={14} /> Загрузить шрифт (.ttf .otf .woff)
           </Btn>
           {() => (editing.value ? <Btn small kind="ghost" onClick={exportFont}><Icon name="download" size={14} /> Экспорт</Btn> : null)}
         </div>

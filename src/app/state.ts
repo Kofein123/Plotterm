@@ -30,7 +30,7 @@ const DEFAULT_PAPER: PaperSettings = {
 const DEFAULT_TYPO: TypographySettings = {
   fontId: 'gost-a', xHeight: 3, slant: 12, letterSpacing: 1, wordSpacing: 1, align: 'left', hyphenate: true, indent: 10, liveliness: 3, seed: 1,
 };
-const DEFAULT_PEN: PenSettings = { pressure: 0.4, zDownFeed: 1500, dwellMs: 0 };
+const DEFAULT_PEN: PenSettings = { pressure: 0.4, zDownFeed: 3000, dwellMs: 0, zDownRapid: false, hopLift: 0.8, hopDistance: 6 };
 const DEFAULT_SPEED: SpeedSettings = { profile: 'normal', customFeed: 4000, travelFeed: 0, joinTolerance: 0.15, simplify: 0.05, park: 'zero' };
 
 export interface Prefs {
@@ -181,7 +181,7 @@ export const app = createRoot(() => {
   const isPenDown = (z: number) => {
     const c = calib.peek();
     const dir = c.upZ >= 0 ? 1 : -1;
-    return z * dir < Math.abs(c.upZ) * 0.35;
+    return z * dir < Math.min(0.2, Math.abs(c.upZ) * 0.35);
   };
 
   const job = new JobRunner(machine, {

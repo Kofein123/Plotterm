@@ -111,7 +111,19 @@ export function synthesizeKazakh(glyphs: Glyphs, m: Metrics) {
   if (!glyphs.has('ё') && e) {
     const b = bbox(e);
     const y = m.xHeight * 1.25;
-    put('ё', addStrokes(e, [b.minX + b.maxX * 0.25, y, b.minX + b.maxX * 0.25 + 0.05, y], [b.maxX * 0.75, y, b.maxX * 0.75 + 0.05, y]));
+    const d = m.xHeight * 0.07; // точка — короткий штрих
+    const w = b.maxX - b.minX;
+    put('ё', addStrokes(e, [b.minX + w * 0.28 - d / 2, y, b.minX + w * 0.28 + d / 2, y], [b.minX + w * 0.72 - d / 2, y, b.minX + w * 0.72 + d / 2, y]));
+  }
+  if (!glyphs.has('Ё')) {
+    const E = get('Е');
+    if (E) {
+      const b = bbox(E);
+      const y = m.capHeight * 1.15;
+      const d = m.xHeight * 0.07;
+      const w = b.maxX - b.minX;
+      put('Ё', addStrokes(E, [b.minX + w * 0.3 - d / 2, y, b.minX + w * 0.3 + d / 2, y], [b.minX + w * 0.7 - d / 2, y, b.minX + w * 0.7 + d / 2, y]));
+    }
   }
   // √
   if (!glyphs.has('√')) {

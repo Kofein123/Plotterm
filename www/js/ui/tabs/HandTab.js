@@ -6,6 +6,7 @@ import { BUILTIN_FONTS, CUSTOM_X_HEIGHT, resolveGlyph } from "../../fonts/fonts.
 import { Btn, Field, Icon, NumInput, Note, Section, Select, Segmented } from "../components.js";
 import { downloadText, pickFile, toast } from "../../app/notify.js";
 import { importSvgFont } from "../../io/svgfont.js";
+import { importOutlineFont } from "../../io/outlinefont.js";
 const GROUPS = {
     lower: 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя',
     upper: 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ',
@@ -219,13 +220,19 @@ async function exportFont() {
         return;
     downloadText(`${r.name}.plotterm-font.json`, JSON.stringify(r), 'application/json');
 }
-async function importFont() {
-    const f = await pickFile('.json,.svg');
+export const importBusy = signal(null);
+export async function importFont() {
+    const f = await pickFile('.ttf,.otf,.woff,.woff2,.svg,.json,font/ttf,font/otf,font/woff,font/woff2');
     if (!f)
         return;
     try {
         let rec;
-        if (f.name.toLowerCase().endsWith('.svg')) {
+        const lower = f.name.toLowerCase();
+        if (/\.(ttf|otf|woff2?)$/.test(lower)) {
+            importBusy.value = 'Читаю шрифт…';
+            rec = await importOutlineFont(f, (d, t) => (importBusy.value = `Перевожу буквы в линии: ${d} из ${t}`));
+        }
+        else if (lower.endsWith('.svg')) {
             rec = importSvgFont(await f.text(), f.name.replace(/\.svg$/i, ''));
         }
         else {
@@ -236,15 +243,23 @@ async function importFont() {
         }
         await saveCustomFont(rec);
         editing.value = structuredClone(rec);
-        toast(`Шрифт «${rec.name}» добавлен: ${Object.keys(rec.glyphs).length} символов.`, 'ok');
+        app.typo.patch({ fontId: rec.id, letterSpacing: 1, wordSpacing: 1, ...(/\.(ttf|otf|woff2?)$/.test(lower) ? { slant: 0 } : {}) });
+        const cyr = [...'абвгдежзийклмнопрстуфхцчшщъыьэюя'].filter((c) => rec.glyphs[c]).length;
+        toast(`Шрифт «${rec.name}» добавлен и выбран: ${Object.keys(rec.glyphs).length} символов` +
+            (cyr < 32 ? `, кириллицы ${cyr}/32 — недостающие буквы возьмутся из ГОСТ.` : ', вся кириллица на месте.'), cyr < 20 ? 'warn' : 'ok', 9000);
     }
     catch (e) {
         toast('Не удалось импортировать: ' + (e?.message ?? e), 'err');
     }
+    finally {
+        importBusy.value = null;
+    }
 }
 export function HandTab() {
     return (h("div", { class: "tab" },
-        h(Section, { title: "\u041C\u043E\u0439 \u043F\u043E\u0447\u0435\u0440\u043A", aside: h(Btn, { small: true, kind: "primary", onClick: newFont }, "\u041D\u043E\u0432\u044B\u0439") },
+        h(Section, { title: "\u041C\u043E\u0439 \u043F\u043E\u0447\u0435\u0440\u043A", aside: h(Btn, { small: true, onClick: newFont }, "\u041D\u0430\u0440\u0438\u0441\u043E\u0432\u0430\u0442\u044C \u043D\u043E\u0432\u044B\u0439") },
+            () => (importBusy.value ? h(Note, { kind: "info" }, importBusy.value) : null),
+            h("div", { class: "muted small" }, "\u041E\u0431\u044B\u0447\u043D\u044B\u0439 \u0448\u0440\u0438\u0444\u0442 (.ttf/.otf/.woff, \u043D\u0430\u043F\u0440\u0438\u043C\u0435\u0440 \u0441\u0434\u0435\u043B\u0430\u043D\u043D\u044B\u0439 \u0438\u0437 \u0432\u0430\u0448\u0435\u0433\u043E \u043F\u043E\u0447\u0435\u0440\u043A\u0430 \u0432 Calligraphr) \u043F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0430 \u0441\u0430\u043C\u0430 \u043F\u0435\u0440\u0435\u0432\u0435\u0434\u0451\u0442 \u0432 \u043B\u0438\u043D\u0438\u044E \u043F\u043E \u0446\u0435\u043D\u0442\u0440\u0443 \u0448\u0442\u0440\u0438\u0445\u0430 \u2014 \u043F\u043B\u043E\u0442\u0442\u0435\u0440 \u043F\u0438\u0448\u0435\u0442 \u043E\u0434\u043D\u043E\u0439 \u043B\u0438\u043D\u0438\u0435\u0439, \u0431\u0435\u0437 \u043E\u0431\u0432\u043E\u0434\u043A\u0438 \u043A\u043E\u043D\u0442\u0443\u0440\u0430."),
             h("div", { class: "muted small" }, "\u0415\u0434\u0438\u043D\u0441\u0442\u0432\u0435\u043D\u043D\u044B\u0439 \u0441\u043F\u043E\u0441\u043E\u0431, \u0447\u0442\u043E\u0431\u044B \u043A\u043E\u043D\u0441\u043F\u0435\u043A\u0442 \u0432\u044B\u0433\u043B\u044F\u0434\u0435\u043B \u043D\u0430\u043F\u0438\u0441\u0430\u043D\u043D\u044B\u043C \u0432\u0430\u043C\u0438: \u043D\u0430\u0440\u0438\u0441\u0443\u0439\u0442\u0435 \u0431\u0443\u043A\u0432\u044B \u043C\u044B\u0448\u044C\u044E \u0438\u043B\u0438 \u0441\u0442\u0438\u043B\u0443\u0441\u043E\u043C, \u043A\u0430\u0436\u0434\u0443\u044E 3\u20135 \u0440\u0430\u0437 \u2014 \u043F\u0440\u0438 \u043F\u0435\u0447\u0430\u0442\u0438 \u0432\u0430\u0440\u0438\u0430\u043D\u0442\u044B \u0447\u0435\u0440\u0435\u0434\u0443\u044E\u0442\u0441\u044F. \u041D\u0435\u0434\u043E\u0441\u0442\u0430\u044E\u0449\u0438\u0435 \u0441\u0438\u043C\u0432\u043E\u043B\u044B \u0432\u043E\u0437\u044C\u043C\u0443\u0442\u0441\u044F \u0438\u0437 \u0431\u0430\u0437\u043E\u0432\u043E\u0433\u043E \u0448\u0440\u0438\u0444\u0442\u0430."),
             () => app.customFonts.value.length ? (h("div", { class: "font-list" }, app.customFonts.value.map((f) => (h("span", { class: () => 'font-item' + (editing.value?.id === f.id ? ' on' : '') },
                 h("button", { class: "chip", onClick: () => { editing.value = structuredClone(f); strokes.value = []; } },
@@ -260,9 +275,9 @@ export function HandTab() {
                     } } },
                     h(Icon, { name: "trash", size: 14 }))))))) : null,
             h("div", { class: "row wrap" },
-                h(Btn, { small: true, kind: "ghost", onClick: importFont, title: "\u0424\u0430\u0439\u043B .json \u043E\u0442 Plotterm \u0438\u043B\u0438 \u043E\u0434\u043D\u043E\u043B\u0438\u043D\u0435\u0439\u043D\u044B\u0439 SVG-\u0448\u0440\u0438\u0444\u0442 (Hershey Text, EMS)" },
+                h(Btn, { small: true, kind: "primary", onClick: importFont, disabled: () => !!importBusy.value, title: ".ttf, .otf, .woff \u2014 \u043B\u044E\u0431\u043E\u0439 \u0448\u0440\u0438\u0444\u0442; .svg \u2014 \u043E\u0434\u043D\u043E\u043B\u0438\u043D\u0435\u0439\u043D\u044B\u0439 (Hershey Text, EMS); .json \u2014 \u044D\u043A\u0441\u043F\u043E\u0440\u0442 Plotterm" },
                     h(Icon, { name: "upload", size: 14 }),
-                    " \u0418\u043C\u043F\u043E\u0440\u0442 \u0448\u0440\u0438\u0444\u0442\u0430"),
+                    " \u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u0448\u0440\u0438\u0444\u0442 (.ttf .otf .woff)"),
                 () => (editing.value ? h(Btn, { small: true, kind: "ghost", onClick: exportFont },
                     h(Icon, { name: "download", size: 14 }),
                     " \u042D\u043A\u0441\u043F\u043E\u0440\u0442") : null))),

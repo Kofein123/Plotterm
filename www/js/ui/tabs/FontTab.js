@@ -1,6 +1,7 @@
 import { h } from "../dom.js";
 import { app } from "../../app/state.js";
-import { Field, NumInput, Section, Segmented, Select, Slider, Toggle, bind, Icon } from "../components.js";
+import { Btn, Field, NumInput, Section, Segmented, Select, Slider, Toggle, bind, Icon } from "../components.js";
+import { importFont, importBusy } from "./HandTab.js";
 export function FontTab() {
     const t = app.typo;
     const fontId = bind(t, 'fontId');
@@ -9,6 +10,10 @@ export function FontTab() {
             h(Field, { label: "\u041F\u043E\u0447\u0435\u0440\u043A", wide: true },
                 h(Select, { value: fontId.get, onChange: fontId.set, options: () => app.fonts.value.map((f) => ({ value: f.id, label: f.name + (f.builtin ? '' : ' — мой почерк') })) })),
             h("div", { class: "muted small" }, "\u041F\u043B\u043E\u0442\u0442\u0435\u0440 \u0440\u0438\u0441\u0443\u0435\u0442 \u043B\u0438\u043D\u0438\u0435\u0439, \u043F\u043E\u044D\u0442\u043E\u043C\u0443 \u043D\u0443\u0436\u043D\u044B \u043E\u0434\u043D\u043E\u043B\u0438\u043D\u0435\u0439\u043D\u044B\u0435 \u0448\u0440\u0438\u0444\u0442\u044B. \u0412\u0441\u0442\u0440\u043E\u0435\u043D\u044B \u0413\u041E\u0421\u0422 \u0410 \u0438 \u0411 (\u043A\u0438\u0440\u0438\u043B\u043B\u0438\u0446\u0430, \u043B\u0430\u0442\u0438\u043D\u0438\u0446\u0430, \u043A\u0430\u0437\u0430\u0445\u0441\u043A\u0438\u0435 \u0431\u0443\u043A\u0432\u044B). \u0421\u0432\u043E\u0439 \u043F\u043E\u0447\u0435\u0440\u043A \u2014 \u043D\u0430 \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \u00AB\u041C\u043E\u0439 \u043F\u043E\u0447\u0435\u0440\u043A\u00BB."),
+            h(Btn, { small: true, kind: "primary", onClick: () => importFont(), disabled: () => !!importBusy.value },
+                h(Icon, { name: "upload", size: 14 }),
+                " ",
+                () => importBusy.value ?? 'Загрузить свой шрифт (.ttf .otf .woff .svg)'),
             h(Field, { label: "\u0412\u044B\u0441\u043E\u0442\u0430 \u0441\u0442\u0440\u043E\u0447\u043D\u043E\u0439 \u0431\u0443\u043A\u0432\u044B", hint: "2\u20136 \u043C\u043C; \u0432 \u0442\u0435\u0442\u0440\u0430\u0434\u0438 \u043E\u0431\u044B\u0447\u043D\u043E 2,5\u20133,5" },
                 h(Slider, { min: 1.5, max: 7, step: 0.1, value: bind(t, 'xHeight').get, onInput: bind(t, 'xHeight').set, format: (v) => v.toFixed(1) + ' мм' })),
             h(Field, { label: "\u041D\u0430\u043A\u043B\u043E\u043D" },

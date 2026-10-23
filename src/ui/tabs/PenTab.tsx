@@ -1,8 +1,40 @@
 import { h } from '../dom.ts';
 import { app } from '../../app/state.ts';
 import { SPEED_PROFILES, feedOf } from '../../core/types.ts';
-import { Btn, Field, NumInput, Note, Section, Segmented, bind } from '../components.tsx';
-import { measurePenLift, printPattern } from '../../app/actions.ts';
+import { Btn, Field, NumInput, Note, Section, Segmented, Toggle, bind } from '../components.tsx';
+import { measurePenLift, printPattern, writeSetting } from '../../app/actions.ts';
+import { fmtTime } from '../../app/notify.ts';
+
+/** Куда уходит время текущей страницы: письмо / подъёмы ручки / переезды. */
+function TimeBreakdown() {
+  return (
+    <div>
+      {() => {
+        const p = app.previewPlan.value;
+        if (!p || !p.estSeconds) return <div class="muted small">Нет задания.</div>;
+        const parts: [string, number, string][] = [
+          ['письмо', p.timeDraw ?? 0, 'var(--primary)'],
+          ['подъёмы ручки', p.timePen ?? 0, 'var(--accent)'],
+          ['переезды', p.timeTravel ?? 0, 'var(--travel)'],
+        ];
+        const sum = parts.reduce((a, x) => a + x[1], 0) || 1;
+        return (
+          <div class="tbreak">
+            <div class="tbreak-bar">
+              {parts.map(([, v, c]) => <span style={`width:${((v / sum) * 100).toFixed(1)}%;background:${c}`} />)}
+            </div>
+            <div class="tbreak-legend">
+              {parts.map(([n, v, c]) => (
+                <span><i style={`background:${c}`} />{n} {fmtTime(v)} ({Math.round((v / sum) * 100)}%)</span>
+              ))}
+            </div>
+            <div class="muted small">Страница ≈ {fmtTime(p.estSeconds)}, подъёмов ручки: {p.penLifts}.</div>
+          </div>
+        );
+      }}
+    </div>
+  );
+}
 
 export function PenTab() {
   const s = app.speed;
@@ -11,7 +43,7 @@ export function PenTab() {
     <div class="tab">
       <Section title="Скорость письма">
         <div class="speed-cards">
-          {(['draft', 'normal', 'neat'] as const).map((k) => (
+          {(['turbo', 'draft', 'normal', 'neat'] as const).map((k) => (
             <button class={() => 'speed-card' + (s.value.profile === k ? ' on' : '')} onClick={() => s.patch({ profile: k })}>
               <b>{SPEED_PROFILES[k].name}</b>
               <span>{SPEED_PROFILES[k].feed} мм/мин</span>
@@ -38,6 +70,32 @@ export function PenTab() {
           где качество ещё устраивает.
         </div>
         <Btn small onClick={() => printPattern('speed')}>Напечатать полосу скоростей</Btn>
+      </Section>
+      <Section title="Быстрее">
+        <TimeBreakdown />
+        <Field label="Низкий подъём между буквами" hint="внутри строки на короткий переезд ручка поднимается невысоко — это главный выигрыш по времени; 0 — выкл.">
+          <NumInput value={bind(pen, 'hopLift').get} onChange={(v) => pen.patch({ hopLift: v === 0 ? 0 : Math.max(0.3, v) })} min={0} max={5} step={0.1} unit="мм" />
+        </Field>
+        <Field label="Короткий переезд — до">
+          <NumInput value={bind(pen, 'hopDistance').get} onChange={bind(pen, 'hopDistance').set} min={0} max={50} step={1} unit="мм" />
+        </Field>
+        <Toggle value={bind(pen, 'zDownRapid').get} onChange={bind(pen, 'zDownRapid').set} label="Опускать ручку на полной скорости (G0)" hint="Быстрее, но ручка сильнее стукает; на пружине обычно нормально" />
+        {() => {
+          const m = app.machine;
+          const j = m.settings.value.get(11);
+          const jv = j === undefined ? NaN : parseFloat(j);
+          return Number.isFinite(jv) && jv < 0.04 ? (
+            <Note kind="info">
+              Повороты: у платы $11 = {jv} мм — на каждом изгибе буквы она почти останавливается. Значение 0,05 заметно ускоряет
+              письмо без потери точности для ручки.{' '}
+              <Btn small kind="primary" onClick={() => writeSetting(11, '0.050')}>Записать $11=0.05</Btn>
+            </Note>
+          ) : null;
+        }}
+        <div class="muted small">
+          Проверка: «Напечатать полосу скоростей» выше и «Пробный абзац» на вкладке «Калибровка». Если буквы рвутся или
+          ручка пропускает линию — сбавьте скорость или включите обычное опускание.
+        </div>
       </Section>
       <Section title="Ручка (ось Z)">
         <Field label="Нажим" hint="на сколько опустить ниже касания; пружина держит ручку">

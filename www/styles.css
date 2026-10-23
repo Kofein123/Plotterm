@@ -339,3 +339,10 @@ select { width: 100%; max-width: 100%; }
   .left { min-height: 70vh; }
   .topbar-pos { display: none; }
 }
+
+/* время страницы */
+.tbreak { display: flex; flex-direction: column; gap: 6px; }
+.tbreak-bar { display: flex; height: 12px; border-radius: 99px; overflow: hidden; background: var(--panel-2); }
+.tbreak-bar span { height: 100%; }
+.tbreak-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12.5px; }
+.tbreak-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; vertical-align: 0; }

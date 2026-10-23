@@ -27,6 +27,9 @@ export function fromCustom(rec, all = BUILTIN_FONTS) {
     for (const [ch, vs] of Object.entries(rec.glyphs))
         if (vs.length)
             glyphs.set(ch, vs);
+    // казахские буквы, ё и √ — достраиваем из своих же букв, чтобы стиль не смешивался
+    const metrics = { xHeight: CUSTOM_X_HEIGHT, capHeight: CUSTOM_X_HEIGHT * (base.capHeight / base.xHeight), descender: CUSTOM_X_HEIGHT * (base.descender / base.xHeight) };
+    synthesizeKazakh(glyphs, metrics);
     return {
         id: rec.id,
         name: rec.name,
