@@ -1,6 +1,7 @@
 import type { FontData, StrokeFont, CustomFontRecord, GlyphData } from './types.ts';
 import gostA from './data/gostA.ts';
 import gostB from './data/gostB.ts';
+import propis from './data/propis.ts';
 import { synthesizeKazakh } from './kazakh.ts';
 
 function fromData(d: FontData): StrokeFont {
@@ -20,7 +21,12 @@ function fromData(d: FontData): StrokeFont {
   };
 }
 
-export const BUILTIN_FONTS: StrokeFont[] = [fromData(gostA), fromData(gostB)];
+const propisFont: StrokeFont = fromData(propis);
+
+export const BUILTIN_FONTS: StrokeFont[] = [fromData(gostA), fromData(gostB), propisFont];
+
+// В прописи пока только строчные а–я: заглавные, цифры и знаки берём из ГОСТ тип Б.
+propisFont.fallback = BUILTIN_FONTS[1];
 
 export const CUSTOM_X_HEIGHT = 100;
 

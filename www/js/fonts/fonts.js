@@ -1,5 +1,6 @@
 import gostA from "./data/gostA.js";
 import gostB from "./data/gostB.js";
+import propis from "./data/propis.js";
 import { synthesizeKazakh } from "./kazakh.js";
 function fromData(d) {
     const glyphs = new Map();
@@ -18,7 +19,10 @@ function fromData(d) {
         glyphs,
     };
 }
-export const BUILTIN_FONTS = [fromData(gostA), fromData(gostB)];
+const propisFont = fromData(propis);
+export const BUILTIN_FONTS = [fromData(gostA), fromData(gostB), propisFont];
+// В прописи пока только строчные а–я: заглавные, цифры и знаки берём из ГОСТ тип Б.
+propisFont.fallback = BUILTIN_FONTS[1];
 export const CUSTOM_X_HEIGHT = 100;
 /** Пользовательский шрифт. Недостающие символы берутся из базового (масштабируются под xHeight). */
 export function fromCustom(rec, all = BUILTIN_FONTS) {

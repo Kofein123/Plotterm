@@ -4,6 +4,10 @@ export interface GlyphData {
   w: number;
   /** штрихи: плоский массив [x0, y0, x1, y1, ...] на каждый штрих */
   s: number[][];
+  /** связное письмо: точка входа [x, y] в единицах шрифта (главный штрих — s[0]) */
+  i?: [number, number];
+  /** связное письмо: точка выхода [x, y] */
+  o?: [number, number];
 }
 
 export interface FontData {
