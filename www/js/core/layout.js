@@ -2,6 +2,7 @@ import { resolveGlyph } from "../fonts/fonts.js";
 import { parseMarkup } from "./markup.js";
 import { hyphenPoints } from "./hyphen.js";
 import { rng } from "./rng.js";
+import { connector, isHighExit } from "./cursive.js";
 const SCRIPT_SCALE = 0.62;
 /** Базовые линии всех строк страницы. */
 export function pageBaselines(paper, capMm, descMm, gridOrigin) {
@@ -43,6 +44,7 @@ export function layoutText(inp) {
     let charCount = 0;
     const lastVariant = new Map();
     const slantK = Math.tan((typo.slant * Math.PI) / 180);
+    const cursive = typo.cursive !== false;
     const charWidth = (it) => {
         const g = resolveGlyph(font, it.ch);
         if (g.missing)
@@ -223,14 +225,37 @@ export function layoutText(inp) {
             ulStart = null;
         };
         words.forEach((w, wi) => {
+            let run = [];
+            let prev = null;
+            const flushRun = () => {
+                if (run.length >= 4)
+                    pg.strokes.push({ pts: run, line: lineNo });
+                run = [];
+                prev = null;
+            };
             for (const c of w) {
                 if (c.item.underline && ulStart === null)
                     ulStart = x;
                 if (!c.item.underline)
                     flushUnderline(x);
-                renderChar(pg, c, x, baseline, drift, lineNo, r);
+                const out = renderChar(c, x, baseline, drift, r);
+                const joinable = cursive && out.aIn !== null && out.aOut !== null && !c.item.script;
+                if (joinable) {
+                    if (prev !== null && run.length)
+                        run.push(...connector(prev, out.aIn, prev.high));
+                    run.push(...out.strokes[0]);
+                    for (let i = 1; i < out.strokes.length; i++)
+                        pg.strokes.push({ pts: out.strokes[i], line: lineNo });
+                    prev = out.aOut;
+                }
+                else {
+                    flushRun();
+                    for (const st of out.strokes)
+                        pg.strokes.push({ pts: st, line: lineNo });
+                }
                 x += c.w;
             }
+            flushRun();
             if (wi < words.length - 1) {
                 const nextUl = words[wi + 1][0]?.item.underline;
                 if (!nextUl)
@@ -240,7 +265,7 @@ export function layoutText(inp) {
         });
         flushUnderline(x - letterGap);
     }
-    function renderChar(pg, c, x, baseline, drift, lineNo, rr) {
+    function renderChar(c, x, baseline, drift, rr) {
         const first = resolveGlyph(font, c.item.ch);
         let variant = 0;
         if (first.variants > 1) {
@@ -260,22 +285,36 @@ export function layoutText(inp) {
         const cy = (typo.xHeight * sc) / 2;
         const cos = Math.cos(rot);
         const sin = Math.sin(rot);
+        const tp = (ax, ay) => {
+            let X = ax * k - cx;
+            let Y = ay * k - cy;
+            const X2 = X * cos - Y * sin;
+            const Y2 = X * sin + Y * cos;
+            X = X2 + cx;
+            Y = Y2 + cy;
+            X += Y * slantK;
+            const u = x + X + dx;
+            return [u, baseline + drift(u) - (Y + scriptDy) + dy];
+        };
+        const strokes = [];
         for (const st of g.glyph.s) {
             const pts = new Array(st.length);
             for (let i = 0; i < st.length; i += 2) {
-                let X = st[i] * k - cx;
-                let Y = st[i + 1] * k - cy;
-                const X2 = X * cos - Y * sin;
-                const Y2 = X * sin + Y * cos;
-                X = X2 + cx;
-                Y = Y2 + cy;
-                X += Y * slantK;
-                const u = x + X + dx;
+                const [u, v] = tp(st[i], st[i + 1]);
                 pts[i] = u;
-                pts[i + 1] = baseline + drift(u) - (Y + scriptDy) + dy;
+                pts[i + 1] = v;
             }
-            pg.strokes.push({ pts, line: lineNo });
+            strokes.push(pts);
         }
+        let aIn = null;
+        let aOut = null;
+        if (g.glyph.i && g.glyph.o && strokes.length) {
+            const pi = tp(g.glyph.i[0], g.glyph.i[1]);
+            const po = tp(g.glyph.o[0], g.glyph.o[1]);
+            aIn = { x: pi[0], y: pi[1], high: isHighExit(g.glyph.i[1], font.xHeight) };
+            aOut = { x: po[0], y: po[1], high: isHighExit(g.glyph.o[1], font.xHeight) };
+        }
+        return { strokes, aIn, aOut };
     }
     return { pages, missingChars: [...missing], chars: charCount };
 }

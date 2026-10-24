@@ -69,6 +69,8 @@ export interface TypographySettings {
   /** живость почерка 0–10 */
   liveliness: number;
   seed: number;
+  /** связное письмо: не поднимать ручку внутри слова (если шрифт задаёт точки входа/выхода) */
+  cursive?: boolean;
 }
 
 export interface Calibration {
