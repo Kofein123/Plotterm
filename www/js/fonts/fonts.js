@@ -19,10 +19,21 @@ function fromData(d) {
         glyphs,
     };
 }
-const propisFont = fromData(propis);
-export const BUILTIN_FONTS = [fromData(gostA), fromData(gostB), propisFont];
-// В прописи пока только строчные а–я: заглавные, цифры и знаки берём из ГОСТ тип Б.
-propisFont.fallback = BUILTIN_FONTS[1];
+/** Дополняет шрифт недостающими глифами из базового, пересчитывая их под его высоту. */
+function fillMissing(f, base) {
+    const k = f.xHeight / base.xHeight;
+    for (const [ch, vs] of base.glyphs) {
+        if (f.glyphs.has(ch))
+            continue;
+        f.glyphs.set(ch, vs.map((g) => ({ w: g.w * k, s: g.s.map((st) => st.map((v) => v * k)) })));
+    }
+    return f;
+}
+const gostAFont = fromData(gostA);
+const gostBFont = fromData(gostB);
+// В прописи нарисованы только строчные а–я: заглавные, цифры и знаки берём из ГОСТ тип Б.
+const propisFont = fillMissing(fromData(propis), gostBFont);
+export const BUILTIN_FONTS = [gostAFont, gostBFont, propisFont];
 export const CUSTOM_X_HEIGHT = 100;
 /** Пользовательский шрифт. Недостающие символы берутся из базового (масштабируются под xHeight). */
 export function fromCustom(rec, all = BUILTIN_FONTS) {

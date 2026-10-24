@@ -21,12 +21,26 @@ function fromData(d: FontData): StrokeFont {
   };
 }
 
-const propisFont: StrokeFont = fromData(propis);
+/** Дополняет шрифт недостающими глифами из базового, пересчитывая их под его высоту. */
+function fillMissing(f: StrokeFont, base: StrokeFont): StrokeFont {
+  const k = f.xHeight / base.xHeight;
+  for (const [ch, vs] of base.glyphs) {
+    if (f.glyphs.has(ch)) continue;
+    f.glyphs.set(
+      ch,
+      vs.map((g) => ({ w: g.w * k, s: g.s.map((st) => st.map((v) => v * k)) })),
+    );
+  }
+  return f;
+}
 
-export const BUILTIN_FONTS: StrokeFont[] = [fromData(gostA), fromData(gostB), propisFont];
+const gostAFont: StrokeFont = fromData(gostA);
+const gostBFont: StrokeFont = fromData(gostB);
+// В прописи нарисованы только строчные а–я: заглавные, цифры и знаки берём из ГОСТ тип Б.
+// У них нет точек входа и выхода, поэтому они пишутся раздельно — как печатные от руки.
+const propisFont: StrokeFont = fillMissing(fromData(propis), gostBFont);
 
-// В прописи пока только строчные а–я: заглавные, цифры и знаки берём из ГОСТ тип Б.
-propisFont.fallback = BUILTIN_FONTS[1];
+export const BUILTIN_FONTS: StrokeFont[] = [gostAFont, gostBFont, propisFont];
 
 export const CUSTOM_X_HEIGHT = 100;
 
