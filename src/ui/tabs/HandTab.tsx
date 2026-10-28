@@ -8,6 +8,9 @@ import { Btn, Field, Icon, NumInput, Note, Section, Select, Segmented } from '..
 import { downloadText, pickFile, toast } from '../../app/notify.ts';
 import { importSvgFont } from '../../io/svgfont.ts';
 import { importOutlineFont } from '../../io/outlinefont.ts';
+import { templateSvg } from '../../io/template.ts';
+import { readTemplate } from '../../io/templateImport.ts';
+import { imageFileToGray } from '../../io/image.ts';
 
 const GROUPS: Record<string, string> = {
   lower: 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя',
@@ -262,6 +265,40 @@ export async function importFont() {
   }
 }
 
+function downloadTemplate() {
+  downloadText('plotterm-list-shablon.svg', templateSvg(), 'image/svg+xml');
+  toast('Распечатайте лист в масштабе 100 % («реальный размер»), заполните ручкой и сфотографируйте целиком сверху.', 'info', 9000);
+}
+
+/** Фото заполненного листа-шаблона → варианты букв в шрифт, который сейчас открыт (или в новый). */
+export async function importTemplatePhoto() {
+  const f = await pickFile('image/*');
+  if (!f) return;
+  try {
+    importBusy.value = 'Читаю фото листа…';
+    const gray = await imageFileToGray(f);
+    importBusy.value = 'Ищу метки и снимаю буквы…';
+    await new Promise((r) => setTimeout(r, 0));
+    const res = readTemplate(gray);
+    if (res.filled < 3) throw new Error('на листе почти нет букв — проверьте, что фото резкое и без бликов');
+    let rec = editing.peek();
+    if (!rec) {
+      rec = { id: 'custom-' + Date.now().toString(36), name: 'Мой почерк', baseFontId: 'gost-b', glyphs: {}, letterSpacing: 12, wordSpacing: 110, updatedAt: Date.now() };
+    }
+    const glyphs = { ...rec.glyphs };
+    for (const [ch, vs] of Object.entries(res.glyphs)) glyphs[ch] = [...(glyphs[ch] ?? []), ...vs];
+    rec = { ...rec, glyphs };
+    await saveCustomFont(rec);
+    editing.value = structuredClone(rec);
+    app.typo.patch({ fontId: rec.id });
+    toast(`С листа снято ${res.filled} букв, шрифт «${rec.name}» выбран. Каждый новый лист добавляет варианты.`, 'ok', 9000);
+  } catch (e: any) {
+    toast('Не получилось прочитать лист: ' + (e?.message ?? e), 'err');
+  } finally {
+    importBusy.value = null;
+  }
+}
+
 export function HandTab() {
   return (
     <div class="tab">
@@ -299,6 +336,16 @@ export function HandTab() {
             <Icon name="upload" size={14} /> Загрузить шрифт (.ttf .otf .woff)
           </Btn>
           {() => (editing.value ? <Btn small kind="ghost" onClick={exportFont}><Icon name="download" size={14} /> Экспорт</Btn> : null)}
+        </div>
+        <div class="muted small">
+          Проще всего — лист-шаблон: распечатать, написать по букве в клетке своей ручкой, сфотографировать.
+          Каждый заполненный лист добавляет ещё один вариант каждой буквы.
+        </div>
+        <div class="row wrap">
+          <Btn small onClick={downloadTemplate}><Icon name="download" size={14} /> Лист-шаблон А4</Btn>
+          <Btn small kind="primary" onClick={importTemplatePhoto} disabled={() => !!importBusy.value} title="JPEG или PNG; лист целиком, четыре чёрные метки по углам должны быть видны">
+            <Icon name="upload" size={14} /> Фото заполненного листа
+          </Btn>
         </div>
       </Section>
       {() =>

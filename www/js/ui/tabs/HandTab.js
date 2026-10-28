@@ -7,6 +7,9 @@ import { Btn, Field, Icon, NumInput, Note, Section, Select, Segmented } from "..
 import { downloadText, pickFile, toast } from "../../app/notify.js";
 import { importSvgFont } from "../../io/svgfont.js";
 import { importOutlineFont } from "../../io/outlinefont.js";
+import { templateSvg } from "../../io/template.js";
+import { readTemplate } from "../../io/templateImport.js";
+import { imageFileToGray } from "../../io/image.js";
 const GROUPS = {
     lower: 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя',
     upper: 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ',
@@ -255,6 +258,43 @@ export async function importFont() {
         importBusy.value = null;
     }
 }
+function downloadTemplate() {
+    downloadText('plotterm-list-shablon.svg', templateSvg(), 'image/svg+xml');
+    toast('Распечатайте лист в масштабе 100 % («реальный размер»), заполните ручкой и сфотографируйте целиком сверху.', 'info', 9000);
+}
+/** Фото заполненного листа-шаблона → варианты букв в шрифт, который сейчас открыт (или в новый). */
+export async function importTemplatePhoto() {
+    const f = await pickFile('image/*');
+    if (!f)
+        return;
+    try {
+        importBusy.value = 'Читаю фото листа…';
+        const gray = await imageFileToGray(f);
+        importBusy.value = 'Ищу метки и снимаю буквы…';
+        await new Promise((r) => setTimeout(r, 0));
+        const res = readTemplate(gray);
+        if (res.filled < 3)
+            throw new Error('на листе почти нет букв — проверьте, что фото резкое и без бликов');
+        let rec = editing.peek();
+        if (!rec) {
+            rec = { id: 'custom-' + Date.now().toString(36), name: 'Мой почерк', baseFontId: 'gost-b', glyphs: {}, letterSpacing: 12, wordSpacing: 110, updatedAt: Date.now() };
+        }
+        const glyphs = { ...rec.glyphs };
+        for (const [ch, vs] of Object.entries(res.glyphs))
+            glyphs[ch] = [...(glyphs[ch] ?? []), ...vs];
+        rec = { ...rec, glyphs };
+        await saveCustomFont(rec);
+        editing.value = structuredClone(rec);
+        app.typo.patch({ fontId: rec.id });
+        toast(`С листа снято ${res.filled} букв, шрифт «${rec.name}» выбран. Каждый новый лист добавляет варианты.`, 'ok', 9000);
+    }
+    catch (e) {
+        toast('Не получилось прочитать лист: ' + (e?.message ?? e), 'err');
+    }
+    finally {
+        importBusy.value = null;
+    }
+}
 export function HandTab() {
     return (h("div", { class: "tab" },
         h(Section, { title: "\u041C\u043E\u0439 \u043F\u043E\u0447\u0435\u0440\u043A", aside: h(Btn, { small: true, onClick: newFont }, "\u041D\u0430\u0440\u0438\u0441\u043E\u0432\u0430\u0442\u044C \u043D\u043E\u0432\u044B\u0439") },
@@ -280,7 +320,15 @@ export function HandTab() {
                     " \u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u0448\u0440\u0438\u0444\u0442 (.ttf .otf .woff)"),
                 () => (editing.value ? h(Btn, { small: true, kind: "ghost", onClick: exportFont },
                     h(Icon, { name: "download", size: 14 }),
-                    " \u042D\u043A\u0441\u043F\u043E\u0440\u0442") : null))),
+                    " \u042D\u043A\u0441\u043F\u043E\u0440\u0442") : null)),
+            h("div", { class: "muted small" }, "\u041F\u0440\u043E\u0449\u0435 \u0432\u0441\u0435\u0433\u043E \u2014 \u043B\u0438\u0441\u0442-\u0448\u0430\u0431\u043B\u043E\u043D: \u0440\u0430\u0441\u043F\u0435\u0447\u0430\u0442\u0430\u0442\u044C, \u043D\u0430\u043F\u0438\u0441\u0430\u0442\u044C \u043F\u043E \u0431\u0443\u043A\u0432\u0435 \u0432 \u043A\u043B\u0435\u0442\u043A\u0435 \u0441\u0432\u043E\u0435\u0439 \u0440\u0443\u0447\u043A\u043E\u0439, \u0441\u0444\u043E\u0442\u043E\u0433\u0440\u0430\u0444\u0438\u0440\u043E\u0432\u0430\u0442\u044C. \u041A\u0430\u0436\u0434\u044B\u0439 \u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D\u043D\u044B\u0439 \u043B\u0438\u0441\u0442 \u0434\u043E\u0431\u0430\u0432\u043B\u044F\u0435\u0442 \u0435\u0449\u0451 \u043E\u0434\u0438\u043D \u0432\u0430\u0440\u0438\u0430\u043D\u0442 \u043A\u0430\u0436\u0434\u043E\u0439 \u0431\u0443\u043A\u0432\u044B."),
+            h("div", { class: "row wrap" },
+                h(Btn, { small: true, onClick: downloadTemplate },
+                    h(Icon, { name: "download", size: 14 }),
+                    " \u041B\u0438\u0441\u0442-\u0448\u0430\u0431\u043B\u043E\u043D \u04104"),
+                h(Btn, { small: true, kind: "primary", onClick: importTemplatePhoto, disabled: () => !!importBusy.value, title: "JPEG \u0438\u043B\u0438 PNG; \u043B\u0438\u0441\u0442 \u0446\u0435\u043B\u0438\u043A\u043E\u043C, \u0447\u0435\u0442\u044B\u0440\u0435 \u0447\u0451\u0440\u043D\u044B\u0435 \u043C\u0435\u0442\u043A\u0438 \u043F\u043E \u0443\u0433\u043B\u0430\u043C \u0434\u043E\u043B\u0436\u043D\u044B \u0431\u044B\u0442\u044C \u0432\u0438\u0434\u043D\u044B" },
+                    h(Icon, { name: "upload", size: 14 }),
+                    " \u0424\u043E\u0442\u043E \u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D\u043D\u043E\u0433\u043E \u043B\u0438\u0441\u0442\u0430"))),
         () => hasEditing.value ? (h(Section, { title: () => `Рисуем: «${editing.value?.name ?? ''}»` },
             h(Segmented, { small: true, value: () => group.value, onChange: (v) => { group.value = v; ch.value = [...GROUPS[v]][0]; strokes.value = []; }, options: GROUP_NAMES }),
             h("div", { class: "char-grid" }, () => [...GROUPS[group.value]].map((c) => {

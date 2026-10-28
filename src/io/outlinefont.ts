@@ -338,7 +338,7 @@ function reverse(p: number[]) {
 }
 
 /** Сглаживание скользящим средним (концы на месте): убирает «лесенку» пикселей. */
-function smooth(p: number[]): number[] {
+export function smooth(p: number[]): number[] {
   const n = p.length / 2;
   if (n < 5) return p;
   const out = p.slice();

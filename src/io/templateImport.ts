@@ -1,0 +1,331 @@
+// Фото заполненного листа-шаблона → буквы своего почерка.
+//   1) найти четыре чёрные метки по углам и выпрямить лист (гомография);
+//   2) из каждой клетки взять чернила порогом (голубые направляющие и серые подписи светлее — уходят);
+//   3) скелет → ломаные (как при импорте TTF), порядок и направление штрихов как у руки, точки входа/выхода.
+// Без DOM: на вход — яркость пикселей, поэтому всё проверяется тестами в node.
+import type { GlyphData } from '../fonts/types.ts';
+import { CUSTOM_X_HEIGHT } from '../fonts/fonts.ts';
+import { simplify } from '../core/geometry.ts';
+import { extractDots, pruneStairs, smooth, thin, trace } from './outlinefont.ts';
+import { MARKS, MARK_SIZE, SHEET_W, X_HEIGHT, templateCells, type TemplateCell } from './template.ts';
+
+/** Яркость 0–255, построчно. */
+export interface Gray {
+  w: number;
+  h: number;
+  data: Uint8Array;
+}
+
+export type Homography = number[]; // 3×3 по строкам
+
+/** Гомография по четырём парам точек: from (лист, мм) → to (фото, пиксели). */
+export function homography(from: [number, number][], to: [number, number][]): Homography {
+  const A: number[][] = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = from[i], [u, v] = to[i];
+    A.push([x, y, 1, 0, 0, 0, -u * x, -u * y, u]);
+    A.push([0, 0, 0, x, y, 1, -v * x, -v * y, v]);
+  }
+  // Гаусс с выбором главного элемента
+  for (let c = 0; c < 8; c++) {
+    let p = c;
+    for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    [A[c], A[p]] = [A[p], A[c]];
+    if (Math.abs(A[c][c]) < 1e-12) throw new Error('метки на фото стоят вырожденно');
+    for (let r = 0; r < 8; r++) {
+      if (r === c) continue;
+      const f = A[r][c] / A[c][c];
+      for (let k = c; k < 9; k++) A[r][k] -= f * A[c][k];
+    }
+  }
+  const h = A.map((row, i) => row[8] / row[i]);
+  return [...h, 1];
+}
+
+export function project(H: Homography, x: number, y: number): [number, number] {
+  const w = H[6] * x + H[7] * y + H[8];
+  return [(H[0] * x + H[1] * y + H[2]) / w, (H[3] * x + H[4] * y + H[5]) / w];
+}
+
+function sample(g: Gray, x: number, y: number): number {
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  if (x0 < 0 || y0 < 0 || x0 >= g.w - 1 || y0 >= g.h - 1) return 255;
+  const fx = x - x0, fy = y - y0;
+  const i = y0 * g.w + x0;
+  const d = g.data;
+  return (d[i] * (1 - fx) + d[i + 1] * fx) * (1 - fy) + (d[i + g.w] * (1 - fx) + d[i + g.w + 1] * fx) * fy;
+}
+
+function percentile(values: ArrayLike<number>, p: number): number {
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < values.length; i++) hist[Math.max(0, Math.min(255, values[i] | 0))]++;
+  let need = values.length * p;
+  for (let v = 0; v < 256; v++) {
+    need -= hist[v];
+    if (need <= 0) return v;
+  }
+  return 255;
+}
+
+/** Найти четыре угловые метки. Порядок как в MARKS: левый верхний, правый верхний, правый нижний, левый нижний. */
+export function findMarks(g: Gray): [number, number][] | null {
+  // работаем на уменьшенной копии: метки крупные
+  const step = Math.max(1, Math.ceil(Math.max(g.w, g.h) / 1200));
+  const W = Math.floor(g.w / step), H = Math.floor(g.h / step);
+  const small = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) small[y * W + x] = g.data[y * step * g.w + x * step];
+  const paper = percentile(small, 0.85);
+  const thr = paper * 0.45;
+  const dark = new Uint8Array(W * H);
+  for (let i = 0; i < dark.length; i++) dark[i] = small[i] < thr ? 1 : 0;
+  // ожидаемый размер метки: 8 мм из 210 мм ширины листа, лист занимает 40–100 % кадра
+  const big = Math.max(W, H);
+  const minSide = big * (MARK_SIZE / 297) * 0.3;
+  const maxSide = big * (MARK_SIZE / SHEET_W) * 1.6;
+  const cands: { x: number; y: number }[] = [];
+  const seen = new Uint8Array(W * H);
+  const stack: number[] = [];
+  for (let i = 0; i < dark.length; i++) {
+    if (!dark[i] || seen[i]) continue;
+    let n = 0, sx = 0, sy = 0, minX = W, minY = H, maxX = 0, maxY = 0;
+    stack.push(i);
+    seen[i] = 1;
+    while (stack.length) {
+      const c = stack.pop()!;
+      const x = c % W, y = (c / W) | 0;
+      n++; sx += x; sy += y;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      if (x > 0 && dark[c - 1] && !seen[c - 1]) { seen[c - 1] = 1; stack.push(c - 1); }
+      if (x < W - 1 && dark[c + 1] && !seen[c + 1]) { seen[c + 1] = 1; stack.push(c + 1); }
+      if (y > 0 && dark[c - W] && !seen[c - W]) { seen[c - W] = 1; stack.push(c - W); }
+      if (y < H - 1 && dark[c + W] && !seen[c + W]) { seen[c + W] = 1; stack.push(c + W); }
+    }
+    const bw = maxX - minX + 1, bh = maxY - minY + 1;
+    if (bw < minSide || bh < minSide || bw > maxSide || bh > maxSide) continue;
+    if (bw / bh < 0.55 || bw / bh > 1.8) continue;
+    if (n / (bw * bh) < 0.6) continue;
+    cands.push({ x: (sx / n + 0.5) * step, y: (sy / n + 0.5) * step });
+  }
+  if (cands.length < 4) return null;
+  const corners: [number, number][] = [[0, 0], [g.w, 0], [g.w, g.h], [0, g.h]];
+  const out: [number, number][] = [];
+  const used = new Set<number>();
+  for (const [cx, cy] of corners) {
+    let best = -1, bd = Infinity;
+    cands.forEach((c, i) => {
+      const d = Math.hypot(c.x - cx, c.y - cy);
+      if (!used.has(i) && d < bd) { bd = d; best = i; }
+    });
+    used.add(best);
+    out.push([cands[best].x, cands[best].y]);
+  }
+  // метки должны образовывать выпуклый четырёхугольник в правильном порядке (по часовой на фото)
+  for (let i = 0; i < 4; i++) {
+    const [ax, ay] = out[i], [bx, by] = out[(i + 1) % 4], [cx, cy] = out[(i + 2) % 4];
+    if ((bx - ax) * (cy - by) - (by - ay) * (cx - bx) <= 0) return null;
+  }
+  return out;
+}
+
+/** пикселей на мм при вырезании клетки */
+const RES = 10;
+
+export interface CellResult {
+  ch: string;
+  glyph: GlyphData | null;
+}
+
+/** Чернила клетки → глиф в единицах шрифта (x-высота = 100, базовая линия y = 0). */
+export function readCell(g: Gray, H: Homography, cell: TemplateCell): GlyphData | null {
+  const inset = 0.5;
+  const x0 = cell.x + inset, y0 = cell.y + inset;
+  const W = Math.round((cell.w - 2 * inset) * RES), Hh = Math.round((cell.h - 2 * inset) * RES);
+  const lum = new Uint8Array(W * Hh);
+  for (let y = 0; y < Hh; y++)
+    for (let x = 0; x < W; x++) {
+      const [u, v] = project(H, x0 + (x + 0.5) / RES, y0 + (y + 0.5) / RES);
+      lum[y * W + x] = sample(g, u, v);
+    }
+  const paper = percentile(lum, 0.9);
+  const thr = paper * 0.62;
+  const bin = new Uint8Array(W * Hh);
+  let ink = 0;
+  for (let i = 0; i < bin.length; i++) if (lum[i] < thr) { bin[i] = 1; ink++; }
+  removeSpecks(bin, W, Hh, 6);
+  ink = bin.reduce((a, b) => a + b, 0);
+  // пустая клетка: меньше ~0,4 мм² чернил
+  if (ink < 0.4 * RES * RES) return null;
+  const before = ink;
+  const dots = extractDots(bin, W, Hh, X_HEIGHT * RES * 0.36);
+  thin(bin, W, Hh);
+  pruneStairs(bin, W, Hh);
+  let skel = 0;
+  for (let i = 0; i < bin.length; i++) skel += bin[i];
+  const paths = joinChains(trace(bin, W, Hh, Math.max(3, (before / Math.max(skel, 1)) * 0.9)), 2.5);
+  for (const [cx, cy, r] of dots) paths.push([cx - r * 0.35, cy, cx + r * 0.35, cy]);
+  if (!paths.length) return null;
+  const k = CUSTOM_X_HEIGHT / (X_HEIGHT * RES);
+  const basePx = (cell.baseline - y0) * RES;
+  const strokes: number[][] = [];
+  for (const p of paths) {
+    const simp = simplify(smooth(p), 0.5);
+    const out: number[] = [];
+    for (let i = 0; i < simp.length; i += 2) out.push(simp[i] * k, (basePx - simp[i + 1]) * k);
+    if (out.length >= 4) strokes.push(out);
+  }
+  if (!strokes.length) return null;
+  return toGlyph(orderStrokes(strokes), /\p{Ll}/u.test(cell.ch));
+}
+
+/**
+ * После удаления «усиков» на остром углу (м, л, 4) линия остаётся разрезанной на две.
+ * Склеиваем концы, где сходятся ровно два штриха, — под любым углом: рука там ручку не отрывала.
+ */
+export function joinChains(paths: number[][], tol: number): number[][] {
+  const out = paths.map((p) => p.slice());
+  const near = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by) <= tol;
+  const ends = (p: number[]): [number, number][] => [[p[0], p[1]], [p[p.length - 2], p[p.length - 1]]];
+  let merged = true;
+  while (merged) {
+    merged = false;
+    search: for (let i = 0; i < out.length; i++) {
+      for (const [ei, [x, y]] of ends(out[i]).entries()) {
+        // кто ещё касается этой точки
+        const touch: [number, number][] = [];
+        out.forEach((q, j) => ends(q).forEach(([qx, qy], ej) => { if (near(x, y, qx, qy) && !(j === i && ej === ei)) touch.push([j, ej]); }));
+        if (touch.length !== 1 || touch[0][0] === i) continue;
+        const [j, ej] = touch[0];
+        const a = ei === 1 ? out[i] : rev(out[i]);
+        const b = ej === 0 ? out[j] : rev(out[j]);
+        out[i] = a.concat(b.slice(2));
+        out.splice(j, 1);
+        merged = true;
+        break search;
+      }
+    }
+  }
+  return out;
+}
+
+function removeSpecks(bin: Uint8Array, W: number, H: number, minArea: number) {
+  const seen = new Uint8Array(W * H);
+  const stack: number[] = [];
+  for (let i = 0; i < bin.length; i++) {
+    if (!bin[i] || seen[i]) continue;
+    const comp: number[] = [];
+    stack.push(i);
+    seen[i] = 1;
+    while (stack.length) {
+      const c = stack.pop()!;
+      comp.push(c);
+      const x = c % W;
+      for (const n of [c - 1, c + 1, c - W, c + W, c - W - 1, c - W + 1, c + W - 1, c + W + 1]) {
+        if (n < 0 || n >= bin.length || Math.abs((n % W) - x) > 1 || !bin[n] || seen[n]) continue;
+        seen[n] = 1;
+        stack.push(n);
+      }
+    }
+    if (comp.length < minArea) for (const c of comp) bin[c] = 0;
+  }
+}
+
+/**
+ * Порядок и направление штрихов как у руки: слева направо; горизонтальный штрих — слева направо,
+ * вертикальный — сверху вниз; замкнутая петля (о) — от верхней правой точки против часовой.
+ */
+export function orderStrokes(strokes: number[][]): number[][] {
+  const oriented = strokes.map((s) => {
+    const n = s.length / 2;
+    const closed = n > 4 && Math.hypot(s[0] - s[s.length - 2], s[1] - s[s.length - 1]) < 8;
+    if (closed) return orientLoop(s);
+    const dx = s[s.length - 2] - s[0], dy = s[s.length - 1] - s[1];
+    const flip = Math.abs(dx) >= Math.abs(dy) * 0.6 ? dx < 0 : dy > 0; // y вверх: «сверху вниз» = dy < 0
+    return flip ? rev(s) : s;
+  });
+  const minX = (s: number[]) => { let m = Infinity; for (let i = 0; i < s.length; i += 2) m = Math.min(m, s[i]); return m; };
+  return oriented.sort((a, b) => minX(a) - minX(b));
+}
+
+function orientLoop(s: number[]): number[] {
+  let pts = s.slice();
+  if (Math.hypot(pts[0] - pts[pts.length - 2], pts[1] - pts[pts.length - 1]) < 1e-6) pts = pts.slice(0, -2);
+  const n = pts.length / 2;
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += pts[i * 2] * pts[j * 2 + 1] - pts[j * 2] * pts[i * 2 + 1];
+  }
+  if (area < 0) pts = rev(pts); // против часовой (ось y вверх)
+  // старт — верхняя правая точка
+  let best = 0, bv = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const v = pts[i * 2 + 1] + pts[i * 2] * 0.5;
+    if (v > bv) { bv = v; best = i; }
+  }
+  const out: number[] = [];
+  for (let k = 0; k <= n; k++) {
+    const i = (best + k) % n;
+    out.push(pts[i * 2], pts[i * 2 + 1]);
+  }
+  return out;
+}
+
+function rev(s: number[]): number[] {
+  const r: number[] = [];
+  for (let i = s.length - 2; i >= 0; i -= 2) r.push(s[i], s[i + 1]);
+  return r;
+}
+
+/** Сдвинуть к x = 0, посчитать ширину; у строчных с главным штрихом слева направо — вход и выход для связного письма. */
+function toGlyph(strokes: number[][], lower: boolean): GlyphData {
+  let minX = Infinity, maxX = -Infinity;
+  for (const s of strokes) for (let i = 0; i < s.length; i += 2) { minX = Math.min(minX, s[i]); maxX = Math.max(maxX, s[i]); }
+  const r = (v: number) => Math.round(v * 10) / 10;
+  const s = strokes.map((st) => st.map((v, i) => r(i % 2 === 0 ? v - minX : v)));
+  const w = r(maxX - minX);
+  const g: GlyphData = { w, s };
+  if (lower && w > 0) {
+    // главный штрих — самый длинный; ставим его первым
+    let main = 0, best = -1;
+    s.forEach((st, i) => {
+      let l = 0;
+      for (let j = 2; j < st.length; j += 2) l += Math.hypot(st[j] - st[j - 2], st[j + 1] - st[j - 1]);
+      if (l > best) { best = l; main = i; }
+    });
+    const st = s[main];
+    const sx = st[0], ex = st[st.length - 2];
+    if (sx <= w * 0.35 && ex >= w * 0.65) {
+      if (main) s.unshift(...s.splice(main, 1));
+      g.i = [r(sx), r(st[1])];
+      g.o = [r(ex), r(st[st.length - 1])];
+    }
+  }
+  return g;
+}
+
+export interface TemplateReadResult {
+  marks: [number, number][];
+  cells: CellResult[];
+  /** символ → варианты (с одного листа — обычно 1, у строчных 2) */
+  glyphs: Record<string, GlyphData[]>;
+  filled: number;
+}
+
+/** Прочитать весь лист. marks — найденные или указанные вручную центры меток. */
+export function readTemplate(g: Gray, marks?: [number, number][] | null): TemplateReadResult {
+  const m = marks ?? findMarks(g);
+  if (!m) throw new Error('не нашёл четыре чёрные метки по углам листа — снимите лист целиком, сверху, без теней');
+  const H = homography(MARKS, m);
+  const cells = templateCells().map((c) => ({ ch: c.ch, glyph: readCell(g, H, c) }));
+  const glyphs: Record<string, GlyphData[]> = {};
+  let filled = 0;
+  for (const c of cells) {
+    if (!c.glyph) continue;
+    (glyphs[c.ch] ??= []).push(c.glyph);
+    filled++;
+  }
+  return { marks: m, cells, glyphs, filled };
+}

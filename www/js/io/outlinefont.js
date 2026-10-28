@@ -374,7 +374,7 @@ function reverse(p) {
     return r;
 }
 /** Сглаживание скользящим средним (концы на месте): убирает «лесенку» пикселей. */
-function smooth(p) {
+export function smooth(p) {
     const n = p.length / 2;
     if (n < 5)
         return p;
