@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BUILTIN_FONTS } from '../src/fonts/fonts.ts';
-import { MARKS, MARK_SIZE, SHEET_H, SHEET_W, TEMPLATE_CHARS, X_HEIGHT, templateCells, templateSvg } from '../src/io/template.ts';
+import { GRID_CORNERS, MARKS, MARK_SIZE, SHEET_H, SHEET_W, TEMPLATE_CHARS, X_HEIGHT, templateCells, templateSvg } from '../src/io/template.ts';
 import { findMarks, homography, orderStrokes, project, readTemplate, type Gray } from '../src/io/templateImport.ts';
 
 const font = BUILTIN_FONTS.find((f) => f.id === 'gost-b')!;
@@ -141,6 +141,17 @@ test('фото листа в перспективе: метки найдены, 
 // Линию отличаем от букв только по толщине, поэтому штрих, лежащий вдоль линии (низ «1»), теряет
 // кусочек — допуск шире (≈ 0,6 мм). Настоящий растровый лист проверен вручную и снимается чисто.
 test('тёмные печатные линии клетки не попадают в буквы', () => checkPhoto(130, 3, 18));
+
+test('углы таблицы вручную вместо меток дают те же буквы', () => {
+  const { sheet, written } = drawSheet();
+  const corners: [number, number][] = [[140, 170], [1330, 120], [1400, 1830], [95, 1880]];
+  const photo = photograph(sheet, corners, 1500, 2000);
+  const H = homography(MARKS, corners);
+  // человек попадает в угол с ошибкой в пару пикселей
+  const taps = GRID_CORNERS.map(([x, y], i) => { const [u, v] = project(H, x, y); return [u + (i % 2 ? 2 : -2), v + 1] as [number, number]; });
+  const res = readTemplate(photo, taps, GRID_CORNERS);
+  assert.ok(res.filled >= written.size - 6 && res.filled <= written.size, `снято ${res.filled} из ${written.size}`);
+});
 
 test('без меток — понятная ошибка', () => {
   const blank: Gray = { w: 400, h: 600, data: new Uint8Array(400 * 600).fill(240) };

@@ -8,8 +8,8 @@ import { Btn, Field, Icon, NumInput, Note, Section, Select, Segmented } from '..
 import { downloadText, pickFile, toast } from '../../app/notify.ts';
 import { importSvgFont } from '../../io/svgfont.ts';
 import { importOutlineFont } from '../../io/outlinefont.ts';
-import { templateSvg } from '../../io/template.ts';
-import { readTemplate } from '../../io/templateImport.ts';
+import { GRID_CORNERS, templateSvg } from '../../io/template.ts';
+import { findMarks, readTemplate, type Gray, type TemplateReadResult } from '../../io/templateImport.ts';
 import { imageFileToGray } from '../../io/image.ts';
 
 const GROUPS: Record<string, string> = {
@@ -271,6 +271,10 @@ function downloadTemplate() {
 }
 
 /** Фото заполненного листа-шаблона → варианты букв в шрифт, который сейчас открыт (или в новый). */
+/** Метки не попали в кадр: человек сам отмечает на фото четыре угла таблицы. */
+const cornerPick = signal<{ gray: Gray; pts: [number, number][] } | null>(null);
+const CORNER_NAMES = ['левый верхний угол таблицы', 'правый верхний', 'правый нижний (под последней полной строкой)', 'левый нижний'];
+
 export async function importTemplatePhoto() {
   const f = await pickFile('image/*');
   if (!f) return;
@@ -279,24 +283,109 @@ export async function importTemplatePhoto() {
     const gray = await imageFileToGray(f);
     importBusy.value = 'Ищу метки и снимаю буквы…';
     await new Promise((r) => setTimeout(r, 0));
-    const res = readTemplate(gray);
-    if (res.filled < 3) throw new Error('на листе почти нет букв — проверьте, что фото резкое и без бликов');
-    let rec = editing.peek();
-    if (!rec) {
-      rec = { id: 'custom-' + Date.now().toString(36), name: 'Мой почерк', baseFontId: 'gost-b', glyphs: {}, letterSpacing: 12, wordSpacing: 110, updatedAt: Date.now() };
+    const marks = findMarks(gray);
+    if (!marks) {
+      cornerPick.value = { gray, pts: [] };
+      toast('Чёрные метки не видны — отметьте на фото четыре угла таблицы с буквами.', 'info', 9000);
+      return;
     }
-    const glyphs = { ...rec.glyphs };
-    for (const [ch, vs] of Object.entries(res.glyphs)) glyphs[ch] = [...(glyphs[ch] ?? []), ...vs];
-    rec = { ...rec, glyphs };
-    await saveCustomFont(rec);
-    editing.value = structuredClone(rec);
-    app.typo.patch({ fontId: rec.id });
-    toast(`С листа снято ${res.filled} букв, шрифт «${rec.name}» выбран. Каждый новый лист добавляет варианты.`, 'ok', 9000);
+    await applyTemplate(readTemplate(gray, marks));
   } catch (e: any) {
     toast('Не получилось прочитать лист: ' + (e?.message ?? e), 'err');
   } finally {
     importBusy.value = null;
   }
+}
+
+async function applyTemplate(res: TemplateReadResult) {
+  if (res.filled < 3) throw new Error('на листе почти нет букв — проверьте, что фото резкое и без бликов');
+  let rec = editing.peek();
+  if (!rec) {
+    rec = { id: 'custom-' + Date.now().toString(36), name: 'Мой почерк', baseFontId: 'gost-b', glyphs: {}, letterSpacing: 12, wordSpacing: 110, updatedAt: Date.now() };
+  }
+  const glyphs = { ...rec.glyphs };
+  for (const [ch, vs] of Object.entries(res.glyphs)) glyphs[ch] = [...(glyphs[ch] ?? []), ...vs];
+  rec = { ...rec, glyphs };
+  await saveCustomFont(rec);
+  editing.value = structuredClone(rec);
+  app.typo.patch({ fontId: rec.id });
+  toast(`С листа снято ${res.filled} букв, шрифт «${rec.name}» выбран. Каждый новый лист добавляет варианты.`, 'ok', 9000);
+}
+
+async function finishCorners() {
+  const p = cornerPick.peek();
+  if (!p || p.pts.length < 4) return;
+  try {
+    importBusy.value = 'Снимаю буквы…';
+    await new Promise((r) => setTimeout(r, 0));
+    await applyTemplate(readTemplate(p.gray, p.pts, GRID_CORNERS));
+    cornerPick.value = null;
+  } catch (e: any) {
+    toast('Не получилось прочитать лист: ' + (e?.message ?? e), 'err');
+  } finally {
+    importBusy.value = null;
+  }
+}
+
+function CornerPicker() {
+  const p = cornerPick.peek()!;
+  const k = Math.min(1, 1400 / Math.max(p.gray.w, p.gray.h));
+  const w = Math.round(p.gray.w * k), hh = Math.round(p.gray.h * k);
+  let canvas!: HTMLCanvasElement;
+  const draw = () => {
+    const ctx = canvas.getContext('2d')!;
+    const img = ctx.createImageData(w, hh);
+    for (let y = 0; y < hh; y++)
+      for (let x = 0; x < w; x++) {
+        const v = p.gray.data[Math.floor(y / k) * p.gray.w + Math.floor(x / k)];
+        const i = (y * w + x) * 4;
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+        img.data[i + 3] = 255;
+      }
+    ctx.putImageData(img, 0, 0);
+    const pts = cornerPick.value?.pts ?? [];
+    ctx.strokeStyle = '#e5484d';
+    ctx.fillStyle = '#e5484d';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * k, y * k) : ctx.moveTo(x * k, y * k)));
+    if (pts.length === 4) ctx.closePath();
+    ctx.stroke();
+    for (const [x, y] of pts) {
+      ctx.beginPath();
+      ctx.arc(x * k, y * k, 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+  effect(() => { cornerPick.value; if (canvas) draw(); });
+  return (
+    <div class="corner-pick">
+      <Note kind="info">
+        {() => {
+          const n = cornerPick.value?.pts.length ?? 0;
+          return n < 4 ? `Нажмите ${n + 1}-й угол: ${CORNER_NAMES[n]}.` : 'Углы отмечены — можно снимать буквы.';
+        }}
+      </Note>
+      <canvas
+        class="corner-canvas"
+        width={w}
+        height={hh}
+        ref={(el: HTMLCanvasElement) => { canvas = el; requestAnimationFrame(draw); }}
+        onPointerDown={(e: PointerEvent) => {
+          const cur = cornerPick.peek();
+          if (!cur || cur.pts.length >= 4) return;
+          const r = canvas.getBoundingClientRect();
+          const x = ((e.clientX - r.left) / r.width) * w / k, y = ((e.clientY - r.top) / r.height) * hh / k;
+          cornerPick.value = { ...cur, pts: [...cur.pts, [x, y]] };
+        }}
+      />
+      <div class="row wrap">
+        <Btn small kind="primary" onClick={finishCorners} disabled={() => (cornerPick.value?.pts.length ?? 0) < 4 || !!importBusy.value}>Снять буквы</Btn>
+        <Btn small onClick={() => { const c = cornerPick.peek(); if (c) cornerPick.value = { ...c, pts: c.pts.slice(0, -1) }; }} disabled={() => !cornerPick.value?.pts.length}>Убрать точку</Btn>
+        <Btn small kind="ghost" onClick={() => { cornerPick.value = null; }}>Отмена</Btn>
+      </div>
+    </div>
+  );
 }
 
 export function HandTab() {
@@ -347,6 +436,7 @@ export function HandTab() {
             <Icon name="upload" size={14} /> Фото заполненного листа
           </Btn>
         </div>
+        {() => (cornerPick.value ? <CornerPicker /> : null)}
       </Section>
       {() =>
         hasEditing.value ? (
