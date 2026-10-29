@@ -258,8 +258,10 @@ export async function importFont() {
         importBusy.value = null;
     }
 }
+/** какой лист-шаблон печатаем и читаем: 1 — кириллица, 2 — латиница и формулы */
+const sheetNo = signal(1);
 function downloadTemplate() {
-    downloadText('plotterm-list-shablon.svg', templateSvg(), 'image/svg+xml');
+    downloadText(`plotterm-list-shablon-${sheetNo.peek()}.svg`, templateSvg(sheetNo.peek()), 'image/svg+xml');
     toast('Распечатайте лист в масштабе 100 % («реальный размер»), заполните ручкой и сфотографируйте целиком сверху.', 'info', 9000);
 }
 /** Фото заполненного листа-шаблона → варианты букв в шрифт, который сейчас открыт (или в новый). */
@@ -277,11 +279,11 @@ export async function importTemplatePhoto() {
         await new Promise((r) => setTimeout(r, 0));
         const marks = findMarks(gray);
         if (!marks) {
-            cornerPick.value = { gray, pts: [] };
+            cornerPick.value = { gray, sheet: sheetNo.peek(), pts: [] };
             toast('Чёрные метки не видны — отметьте на фото четыре угла таблицы с буквами.', 'info', 9000);
             return;
         }
-        await applyTemplate(readTemplate(gray, marks));
+        await applyTemplate(readTemplate(gray, marks, undefined, sheetNo.peek()));
     }
     catch (e) {
         toast('Не получилось прочитать лист: ' + (e?.message ?? e), 'err');
@@ -313,7 +315,7 @@ async function finishCorners() {
     try {
         importBusy.value = 'Снимаю буквы…';
         await new Promise((r) => setTimeout(r, 0));
-        await applyTemplate(readTemplate(p.gray, p.pts, GRID_CORNERS));
+        await applyTemplate(readTemplate(p.gray, p.pts, GRID_CORNERS, p.sheet));
         cornerPick.value = null;
     }
     catch (e) {
@@ -402,6 +404,7 @@ export function HandTab() {
                     h(Icon, { name: "download", size: 14 }),
                     " \u042D\u043A\u0441\u043F\u043E\u0440\u0442") : null)),
             h("div", { class: "muted small" }, "\u041F\u0440\u043E\u0449\u0435 \u0432\u0441\u0435\u0433\u043E \u2014 \u043B\u0438\u0441\u0442-\u0448\u0430\u0431\u043B\u043E\u043D: \u0440\u0430\u0441\u043F\u0435\u0447\u0430\u0442\u0430\u0442\u044C, \u043D\u0430\u043F\u0438\u0441\u0430\u0442\u044C \u043F\u043E \u0431\u0443\u043A\u0432\u0435 \u0432 \u043A\u043B\u0435\u0442\u043A\u0435 \u0441\u0432\u043E\u0435\u0439 \u0440\u0443\u0447\u043A\u043E\u0439, \u0441\u0444\u043E\u0442\u043E\u0433\u0440\u0430\u0444\u0438\u0440\u043E\u0432\u0430\u0442\u044C. \u041A\u0430\u0436\u0434\u044B\u0439 \u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D\u043D\u044B\u0439 \u043B\u0438\u0441\u0442 \u0434\u043E\u0431\u0430\u0432\u043B\u044F\u0435\u0442 \u0435\u0449\u0451 \u043E\u0434\u0438\u043D \u0432\u0430\u0440\u0438\u0430\u043D\u0442 \u043A\u0430\u0436\u0434\u043E\u0439 \u0431\u0443\u043A\u0432\u044B."),
+            h(Segmented, { small: true, value: () => sheetNo.value, onChange: (v) => { sheetNo.value = v; }, options: [{ value: 1, label: 'Лист 1 · кириллица' }, { value: 2, label: 'Лист 2 · латиница, формулы' }] }),
             h("div", { class: "row wrap" },
                 h(Btn, { small: true, onClick: downloadTemplate },
                     h(Icon, { name: "download", size: 14 }),

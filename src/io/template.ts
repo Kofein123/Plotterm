@@ -26,9 +26,19 @@ const KAZ_LOWER = 'әғқңөұүһі';
 const KAZ_UPPER = 'ӘҒҚҢӨҰҮҺІ';
 const DIGITS = '0123456789';
 const PUNCT = '.,:;!?-—()«»"/+=%№<>~';
+const LATIN_LOWER = 'abcdefghijklmnopqrstuvwxyz';
+const LATIN_UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const GREEK = 'αβγδεηθλμνπρστφψωΔΣΩΦ';
+const MATH = "'*[]{}|±°∞√≈≠≤≥→×·∫";
 
 /** Символы листа по порядку клеток: всё по разу, строчные — второй раз (их больше всего в тексте). */
 export const TEMPLATE_CHARS: string[] = [...LOWER, ...KAZ_LOWER, ...UPPER, ...KAZ_UPPER, ...DIGITS, ...PUNCT, ...LOWER, ...KAZ_LOWER].slice(0, COLS * ROWS);
+/** Лист 2 — для формул: латиница, греческие буквы, знаки; остаток — ещё варианты частых строчных. Клеток столько же. */
+export const TEMPLATE_CHARS_2: string[] = [...LATIN_LOWER, ...LATIN_UPPER, ...GREEK, ...MATH, ...LATIN_LOWER, ...LOWER, ...'әіңқұүөғһ'].slice(0, TEMPLATE_CHARS.length);
+export const TEMPLATE_SHEETS = 2;
+const SHEET_NAMES = ['', 'кириллица, цифры, знаки', 'латиница и формулы'];
+
+export const templateChars = (sheet = 1): string[] => (sheet === 2 ? TEMPLATE_CHARS_2 : TEMPLATE_CHARS);
 
 export interface TemplateCell {
   ch: string;
@@ -48,8 +58,8 @@ export const GRID_CORNERS: [number, number][] = (() => {
   return [[GRID_X, GRID_Y], [x1, GRID_Y], [x1, y1], [GRID_X, y1]];
 })();
 
-export function templateCells(): TemplateCell[] {
-  return TEMPLATE_CHARS.map((ch, i) => {
+export function templateCells(sheet = 1): TemplateCell[] {
+  return templateChars(sheet).map((ch, i) => {
     const col = i % COLS;
     const row = Math.floor(i / COLS);
     const x = GRID_X + col * CELL_W;
@@ -65,9 +75,9 @@ export function templateSvg(sheetNo = 1): string {
   let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${SHEET_W}mm" height="${SHEET_H}mm" viewBox="0 0 ${SHEET_W} ${SHEET_H}">`;
   s += `<rect width="${SHEET_W}" height="${SHEET_H}" fill="#fff"/>`;
   for (const [cx, cy] of MARKS) s += `<rect x="${cx - MARK_SIZE / 2}" y="${cy - MARK_SIZE / 2}" width="${MARK_SIZE}" height="${MARK_SIZE}" fill="#000"/>`;
-  s += `<text x="${SHEET_W / 2}" y="13" font-family="sans-serif" font-size="4" text-anchor="middle" fill="#555">Plotterm · лист-шаблон почерка · лист ${sheetNo}</text>`;
+  s += `<text x="${SHEET_W / 2}" y="13" font-family="sans-serif" font-size="4" text-anchor="middle" fill="#555">Plotterm · лист-шаблон почерка · лист ${sheetNo}: ${SHEET_NAMES[sheetNo] ?? ''}</text>`;
   s += `<text x="${SHEET_W / 2}" y="18.5" font-family="sans-serif" font-size="2.6" text-anchor="middle" fill="#777">Пишите своей обычной ручкой по одной букве в клетке, на сплошной линии, как в тетради. Не выходите за клетку.</text>`;
-  for (const c of templateCells()) {
+  for (const c of templateCells(sheetNo)) {
     const top = c.y - LABEL_H;
     s += `<rect x="${c.x}" y="${top}" width="${c.w}" height="${CELL_H}" fill="none" stroke="#a8d8ee" stroke-width="0.25"/>`;
     s += `<line x1="${c.x}" y1="${c.y}" x2="${c.x + c.w}" y2="${c.y}" stroke="#d4ecf7" stroke-width="0.2"/>`;

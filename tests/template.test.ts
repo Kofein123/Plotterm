@@ -2,14 +2,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BUILTIN_FONTS } from '../src/fonts/fonts.ts';
-import { GRID_CORNERS, MARKS, MARK_SIZE, SHEET_H, SHEET_W, TEMPLATE_CHARS, X_HEIGHT, templateCells, templateSvg } from '../src/io/template.ts';
+import { GRID_CORNERS, MARKS, MARK_SIZE, SHEET_H, SHEET_W, TEMPLATE_CHARS, TEMPLATE_CHARS_2, X_HEIGHT, templateCells, templateSvg } from '../src/io/template.ts';
 import { findMarks, homography, orderStrokes, project, readTemplate, type Gray } from '../src/io/templateImport.ts';
 
 const font = BUILTIN_FONTS.find((f) => f.id === 'gost-b')!;
 const PX = 8; // пикселей на мм в растре листа
 
 /** Лист с «написанными» буквами ГОСТ Б (штрих 0,5 мм) в растре PX пикс/мм. */
-function drawSheet(lineLum = 200, writeH = X_HEIGHT): { sheet: Gray; written: Map<string, number[][]> } {
+function drawSheet(lineLum = 200, writeH = X_HEIGHT, sheetNo = 1): { sheet: Gray; written: Map<string, number[][]> } {
   const W = SHEET_W * PX, H = SHEET_H * PX;
   const data = new Uint8Array(W * H).fill(246);
   const dot = (x: number, y: number, r: number, v: number) => {
@@ -27,7 +27,7 @@ function drawSheet(lineLum = 200, writeH = X_HEIGHT): { sheet: Gray; written: Ma
     for (let y = cy - MARK_SIZE / 2; y <= cy + MARK_SIZE / 2; y += 1 / PX) line(cx - MARK_SIZE / 2, y, cx + MARK_SIZE / 2, y, 0.1, 15);
   const written = new Map<string, number[][]>();
   const k = writeH / font.xHeight;
-  for (const c of templateCells()) {
+  for (const c of templateCells(sheetNo)) {
     // светлые направляющие, как на печати
     line(c.x + 1, c.baseline, c.x + c.w - 1, c.baseline, 0.12, lineLum);
     line(c.x, c.y - 3, c.x + c.w, c.y - 3, 0.1, lineLum + 15);
@@ -82,6 +82,10 @@ test('шаблон: все символы помещаются, SVG собира
   const cells = templateCells();
   for (const c of cells) assert.ok(c.x >= 14 && c.x + c.w <= 196 && c.y + c.h <= 280, `клетка «${c.ch}» вне листа`);
   assert.ok(templateSvg().startsWith('<svg') && templateSvg().includes('лист-шаблон'));
+  // второй лист той же сетки — те же опорные углы таблицы
+  assert.equal(TEMPLATE_CHARS_2.length, TEMPLATE_CHARS.length);
+  for (const ch of 'xyzFImαπΔ√≤∫') assert.ok(TEMPLATE_CHARS_2.includes(ch), ch);
+  assert.ok(templateSvg(2).includes('латиница'));
 });
 
 test('гомография: четыре точки переходят точно', () => {
@@ -104,22 +108,22 @@ test('порядок штрихов: слева направо, вертикал
   assert.ok(area > 0, 'против часовой');
 });
 
-function checkPhoto(lineLum: number, writeH = X_HEIGHT, maxDev = 12) {
-  const { sheet, written } = drawSheet(lineLum, writeH);
+function checkPhoto(lineLum: number, writeH = X_HEIGHT, maxDev = 12, sheetNo = 1, chars = 'абвгдежзиклмнопрстуфхцчшщэюяБДЖЩӘҚ0123456789') {
+  const { sheet, written } = drawSheet(lineLum, writeH, sheetNo);
   const corners: [number, number][] = [[140, 170], [1330, 120], [1400, 1830], [95, 1880]];
   const photo = photograph(sheet, corners, 1500, 2000);
   const marks = findMarks(photo);
   assert.ok(marks, 'метки не найдены');
   marks!.forEach(([x, y], i) => assert.ok(Math.hypot(x - corners[i][0], y - corners[i][1]) < 4, `метка ${i}: ${x},${y}`));
 
-  const res = readTemplate(photo, marks);
+  const res = readTemplate(photo, marks, undefined, sheetNo);
   // точка и запятая у ГОСТ крошечные — их допускаем пропустить
   assert.ok(res.filled >= written.size - 6, `снято ${res.filled} из ${written.size}`);
   // пустые клетки (второй экземпляр строчных) пустыми и остались
   assert.ok(res.filled <= written.size, 'лишние буквы из пустых клеток');
 
   let worst = 0, worstCh = '';
-  for (const ch of 'абвгдежзиклмнопрстуфхцчшщэюяБДЖЩӘҚ0123456789') {
+  for (const ch of chars) {
     const g = res.glyphs[ch]?.[0];
     assert.ok(g, `нет «${ch}»`);
     // сравниваем после совмещения левых краёв (импорт сдвигает букву к x = 0)
@@ -141,6 +145,9 @@ test('фото листа в перспективе: метки найдены, 
 // Линию отличаем от букв только по толщине, поэтому штрих, лежащий вдоль линии (низ «1»), теряет
 // кусочек — допуск шире (≈ 0,6 мм). Настоящий растровый лист проверен вручную и снимается чисто.
 test('тёмные печатные линии клетки не попадают в буквы', () => checkPhoto(130, 3, 18));
+
+// «w» ГОСТ при x-высоте 3,5 мм — острые узкие зубцы, скелет их сглаживает, поэтому в сравнении её нет
+test('лист 2: латиница снимается', () => checkPhoto(200, X_HEIGHT, 12, 2, 'abdeghkmnpqrstuvxyzFGIMNQRS'));
 
 test('углы таблицы вручную вместо меток дают те же буквы', () => {
   const { sheet, written } = drawSheet();

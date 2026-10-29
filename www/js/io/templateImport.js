@@ -501,7 +501,10 @@ function toGlyph(strokes, lower) {
     return g;
 }
 /** Буквы, которые стоят на строке низом (без хвостов вниз). */
-const FLAT_BOTTOM = new Set([...'абвгеёжзийклмнопстхчшъыьэюяәғқңөһіАБВГЕЁЖЗИЙКЛМНОПРСТХЧШЪЫЬЭЮЯӘҒӨҺІ0123456789']);
+const FLAT_BOTTOM = new Set([
+    ...'абвгеёжзийклмнопстхчшъыьэюяәғқңөһіАБВГЕЁЖЗИЙКЛМНОПРСТХЧШЪЫЬЭЮЯӘҒӨҺІ0123456789',
+    ...'abcdehiklmnorstuvwxzABCDEFGHIKLMNOPRSTUVWXYZαδεθλνπσωΔΣΩ',
+]);
 /**
  * Человек пишет то чуть выше, то чуть ниже линии. Общий сдвиг убираем (почерк садится на строку),
  * а разброс отдельных букв оставляем на треть — остальное добавит «живость» при вёрстке.
@@ -536,12 +539,12 @@ function alignBaselines(cells) {
  * Прочитать весь лист. По умолчанию — по найденным угловым меткам. Если метки не попали в кадр,
  * можно передать опорные точки сами: ref — точки листа (мм, например GRID_CORNERS), at — где они на фото.
  */
-export function readTemplate(g, at, ref = MARKS) {
+export function readTemplate(g, at, ref = MARKS, sheet = 1) {
     const m = at ?? findMarks(g);
     if (!m)
         throw new Error('не нашёл четыре чёрные метки по углам листа — снимите лист целиком, сверху, без теней');
     const H = homography(ref, m);
-    const cells = templateCells().map((c) => ({ ch: c.ch, glyph: readCell(g, H, c) }));
+    const cells = templateCells(sheet).map((c) => ({ ch: c.ch, glyph: readCell(g, H, c) }));
     const glyphs = {};
     let filled = 0;
     for (const c of cells) {

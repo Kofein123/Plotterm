@@ -265,14 +265,17 @@ export async function importFont() {
   }
 }
 
+/** какой лист-шаблон печатаем и читаем: 1 — кириллица, 2 — латиница и формулы */
+const sheetNo = signal(1);
+
 function downloadTemplate() {
-  downloadText('plotterm-list-shablon.svg', templateSvg(), 'image/svg+xml');
+  downloadText(`plotterm-list-shablon-${sheetNo.peek()}.svg`, templateSvg(sheetNo.peek()), 'image/svg+xml');
   toast('Распечатайте лист в масштабе 100 % («реальный размер»), заполните ручкой и сфотографируйте целиком сверху.', 'info', 9000);
 }
 
 /** Фото заполненного листа-шаблона → варианты букв в шрифт, который сейчас открыт (или в новый). */
 /** Метки не попали в кадр: человек сам отмечает на фото четыре угла таблицы. */
-const cornerPick = signal<{ gray: Gray; pts: [number, number][] } | null>(null);
+const cornerPick = signal<{ gray: Gray; sheet: number; pts: [number, number][] } | null>(null);
 const CORNER_NAMES = ['левый верхний угол таблицы', 'правый верхний', 'правый нижний (под последней полной строкой)', 'левый нижний'];
 
 export async function importTemplatePhoto() {
@@ -285,11 +288,11 @@ export async function importTemplatePhoto() {
     await new Promise((r) => setTimeout(r, 0));
     const marks = findMarks(gray);
     if (!marks) {
-      cornerPick.value = { gray, pts: [] };
+      cornerPick.value = { gray, sheet: sheetNo.peek(), pts: [] };
       toast('Чёрные метки не видны — отметьте на фото четыре угла таблицы с буквами.', 'info', 9000);
       return;
     }
-    await applyTemplate(readTemplate(gray, marks));
+    await applyTemplate(readTemplate(gray, marks, undefined, sheetNo.peek()));
   } catch (e: any) {
     toast('Не получилось прочитать лист: ' + (e?.message ?? e), 'err');
   } finally {
@@ -318,7 +321,7 @@ async function finishCorners() {
   try {
     importBusy.value = 'Снимаю буквы…';
     await new Promise((r) => setTimeout(r, 0));
-    await applyTemplate(readTemplate(p.gray, p.pts, GRID_CORNERS));
+    await applyTemplate(readTemplate(p.gray, p.pts, GRID_CORNERS, p.sheet));
     cornerPick.value = null;
   } catch (e: any) {
     toast('Не получилось прочитать лист: ' + (e?.message ?? e), 'err');
@@ -430,6 +433,12 @@ export function HandTab() {
           Проще всего — лист-шаблон: распечатать, написать по букве в клетке своей ручкой, сфотографировать.
           Каждый заполненный лист добавляет ещё один вариант каждой буквы.
         </div>
+        <Segmented
+          small
+          value={() => sheetNo.value}
+          onChange={(v) => { sheetNo.value = v; }}
+          options={[{ value: 1, label: 'Лист 1 · кириллица' }, { value: 2, label: 'Лист 2 · латиница, формулы' }]}
+        />
         <div class="row wrap">
           <Btn small onClick={downloadTemplate}><Icon name="download" size={14} /> Лист-шаблон А4</Btn>
           <Btn small kind="primary" onClick={importTemplatePhoto} disabled={() => !!importBusy.value} title="JPEG или PNG; лист целиком, четыре чёрные метки по углам должны быть видны">
