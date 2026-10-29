@@ -150,16 +150,23 @@ export function findMarks(g) {
 /** пикселей на мм при вырезании клетки */
 const RES = 10;
 /** Чернила клетки → глиф в единицах шрифта (x-высота = 100, базовая линия y = 0). */
-export function readCell(g, H, cell) {
-    const inset = 0.5;
-    const x0 = cell.x + inset, y0 = cell.y + inset;
-    const W = Math.round((cell.w - 2 * inset) * RES), Hh = Math.round((cell.h - 2 * inset) * RES);
+const INSET = 0.5;
+/** Яркость области письма клетки в растре RES пикс/мм. */
+function cellLum(g, H, cell) {
+    const x0 = cell.x + INSET, y0 = cell.y + INSET;
+    const W = Math.round((cell.w - 2 * INSET) * RES), Hh = Math.round((cell.h - 2 * INSET) * RES);
     const lum = new Uint8Array(W * Hh);
     for (let y = 0; y < Hh; y++)
         for (let x = 0; x < W; x++) {
             const [u, v] = project(H, x0 + (x + 0.5) / RES, y0 + (y + 0.5) / RES);
             lum[y * W + x] = sample(g, u, v);
         }
+    return { lum, W, Hh, y0 };
+}
+/** Чернила клетки → глиф в единицах шрифта (x-высота = 100, базовая линия y = 0). */
+export function readCell(g, H, cell) {
+    const inset = INSET;
+    const { lum, W, Hh, y0 } = cellLum(g, H, cell);
     const paper = percentile(lum, 0.9);
     const thr = paper * 0.62;
     const bin = new Uint8Array(W * Hh);
@@ -169,10 +176,29 @@ export function readCell(g, H, cell) {
             bin[i] = 1;
             ink++;
         }
+    // печатные линии клетки (на ч/б принтере они выходят тёмными): базовая, пунктир x-высоты, края клетки
+    const by = (cell.baseline - y0) * RES;
+    // найденная на фото базовая линия точнее расчётной: лист бывает выгнут, а фото — с искажениями объектива
+    const foundBase = eraseLine(bin, W, Hh, by, true, 2);
+    for (const y of [(foundBase ?? by) - X_HEIGHT * RES, -inset * RES, (cell.h - inset) * RES])
+        eraseLine(bin, W, Hh, y, true);
+    for (const x of [-inset * RES, (cell.w - inset) * RES])
+        eraseLine(bin, W, Hh, x, false);
+    // обрывки пунктира и полутонов: тонкие плоские пятна, целиком лежащие на линии
+    const lineRows = [foundBase ?? by, (foundBase ?? by) - X_HEIGHT * RES];
+    for (const c of components(bin, W, Hh)) {
+        const h = c.maxY - c.minY + 1, w = c.maxX - c.minX + 1;
+        if (h > 0.4 * RES || w > 2 * RES)
+            continue;
+        if (lineRows.some((y) => c.minY >= y - 0.5 * RES && c.maxY <= y + 0.5 * RES))
+            for (const i of c.px)
+                bin[i] = 0;
+    }
     removeSpecks(bin, W, Hh, 6);
+    dropStrays(bin, W, Hh);
     ink = bin.reduce((a, b) => a + b, 0);
-    // пустая клетка: меньше ~0,4 мм² чернил
-    if (ink < 0.4 * RES * RES)
+    // пустая клетка: меньше ~0,15 мм² чернил (точка ручкой — около 0,2 мм²)
+    if (ink < 0.15 * RES * RES)
         return null;
     const before = ink;
     const dots = extractDots(bin, W, Hh, X_HEIGHT * RES * 0.36);
@@ -187,7 +213,7 @@ export function readCell(g, H, cell) {
     if (!paths.length)
         return null;
     const k = CUSTOM_X_HEIGHT / (X_HEIGHT * RES);
-    const basePx = (cell.baseline - y0) * RES;
+    const basePx = foundBase ?? by;
     const strokes = [];
     for (const p of paths) {
         const simp = simplify(smooth(p), 0.5);
@@ -229,6 +255,136 @@ export function joinChains(paths, tol) {
                 break search;
             }
         }
+    }
+    return out;
+}
+/**
+ * Стереть печатную линию около ожидаемого положения pos (пиксели): ищем ряд/столбец с наибольшим числом
+ * тёмных точек в окне ±searchMm (фото чуть искажает лист) и стираем те её куски, где поперёк линии
+ * тонко (печатная линия ≈ 0,25 мм, штрих ручки ≈ 0,5 мм и толще). Возвращает найденный ряд.
+ */
+function eraseLine(bin, W, H, pos, horizontal, searchMm = 1.5) {
+    const len = horizontal ? W : H, across = horizontal ? H : W;
+    const at = (a, b) => (horizontal ? bin[b * W + a] : bin[a * W + b]); // a — вдоль линии, b — поперёк
+    const set0 = (a, b) => { if (horizontal)
+        bin[b * W + a] = 0;
+    else
+        bin[a * W + b] = 0; };
+    const win = Math.round(searchMm * RES);
+    let best = -1, bestN = 0;
+    for (let b = Math.round(pos) - win; b <= Math.round(pos) + win; b++) {
+        if (b < 0 || b >= across)
+            continue;
+        let n = 0;
+        for (let a = 0; a < len; a++)
+            n += at(a, b);
+        if (n > bestN) {
+            bestN = n;
+            best = b;
+        }
+    }
+    if (best < 0 || bestN < len * 0.25)
+        return null;
+    const thick = Math.round(0.4 * RES), near = Math.round(0.3 * RES);
+    const lo = new Int32Array(len).fill(-1), hi = new Int32Array(len).fill(-1);
+    const lineOnly = new Uint8Array(len);
+    for (let a = 0; a < len; a++) {
+        let l = -1;
+        for (let d = 0; d <= near && l < 0; d++) {
+            if (best - d >= 0 && at(a, best - d))
+                l = best - d;
+            else if (best + d < across && at(a, best + d))
+                l = best + d;
+        }
+        if (l < 0)
+            continue;
+        let h = l;
+        while (l - 1 >= 0 && at(a, l - 1))
+            l--;
+        while (h + 1 < across && at(a, h + 1))
+            h++;
+        if (h - l + 1 <= thick) {
+            lineOnly[a] = 1;
+            lo[a] = l;
+            hi[a] = h;
+        }
+    }
+    // стираем только длинные куски (≥ 1 мм, через разрывы пунктира до 0,6 мм): точка на линии остаётся
+    const minRun = RES, maxGap = Math.round(0.6 * RES);
+    for (let a = 0; a < len;) {
+        if (!lineOnly[a]) {
+            a++;
+            continue;
+        }
+        let ext = a;
+        while (ext < len && lineOnly[ext])
+            ext++;
+        for (;;) {
+            let gap = ext;
+            while (gap < len && !lineOnly[gap] && gap - ext < maxGap)
+                gap++;
+            if (gap >= len || !lineOnly[gap])
+                break;
+            ext = gap;
+            while (ext < len && lineOnly[ext])
+                ext++;
+        }
+        if (ext - a >= minRun)
+            for (let k = a; k < ext; k++)
+                if (lineOnly[k])
+                    for (let q = lo[k]; q <= hi[k]; q++)
+                        set0(k, q);
+        a = ext;
+    }
+    return best;
+}
+/** Убрать обрывки рядом с буквой (край соседней клетки, подпись): мелкое пятно, не перекрывающее букву по горизонтали. */
+function dropStrays(bin, W, H) {
+    const comps = components(bin, W, H);
+    if (comps.length < 2)
+        return;
+    const main = comps.reduce((a, b) => (b.px.length > a.px.length ? b : a));
+    for (const c of comps) {
+        if (c === main || c.px.length > main.px.length * 0.25)
+            continue;
+        const apart = c.maxX < main.minX - RES || c.minX > main.maxX + RES;
+        if (apart)
+            for (const i of c.px)
+                bin[i] = 0;
+    }
+}
+function components(bin, W, H) {
+    const seen = new Uint8Array(W * H);
+    const out = [];
+    const stack = [];
+    for (let i = 0; i < bin.length; i++) {
+        if (!bin[i] || seen[i])
+            continue;
+        const px = [];
+        let minX = W, maxX = 0, minY = H, maxY = 0;
+        stack.push(i);
+        seen[i] = 1;
+        while (stack.length) {
+            const c = stack.pop();
+            px.push(c);
+            const x = c % W;
+            if (x < minX)
+                minX = x;
+            if (x > maxX)
+                maxX = x;
+            const y = (c / W) | 0;
+            if (y < minY)
+                minY = y;
+            if (y > maxY)
+                maxY = y;
+            for (const n of [c - 1, c + 1, c - W, c + W, c - W - 1, c - W + 1, c + W - 1, c + W + 1]) {
+                if (n < 0 || n >= bin.length || Math.abs((n % W) - x) > 1 || !bin[n] || seen[n])
+                    continue;
+                seen[n] = 1;
+                stack.push(n);
+            }
+        }
+        out.push({ px, minX, maxX, minY, maxY });
     }
     return out;
 }
@@ -344,12 +500,47 @@ function toGlyph(strokes, lower) {
     }
     return g;
 }
-/** Прочитать весь лист. marks — найденные или указанные вручную центры меток. */
-export function readTemplate(g, marks) {
-    const m = marks ?? findMarks(g);
+/** Буквы, которые стоят на строке низом (без хвостов вниз). */
+const FLAT_BOTTOM = new Set([...'абвгеёжзийклмнопстхчшъыьэюяәғқңөһіАБВГЕЁЖЗИЙКЛМНОПРСТХЧШЪЫЬЭЮЯӘҒӨҺІ0123456789']);
+/**
+ * Человек пишет то чуть выше, то чуть ниже линии. Общий сдвиг убираем (почерк садится на строку),
+ * а разброс отдельных букв оставляем на треть — остальное добавит «живость» при вёрстке.
+ */
+function alignBaselines(cells) {
+    const bottom = (g) => {
+        let m = Infinity;
+        for (const s of g.s)
+            for (let i = 1; i < s.length; i += 2)
+                m = Math.min(m, s[i]);
+        return m;
+    };
+    const flat = cells.filter((c) => c.glyph && FLAT_BOTTOM.has(c.ch));
+    if (flat.length < 5)
+        return;
+    const bs = flat.map((c) => bottom(c.glyph)).sort((a, b) => a - b);
+    const med = bs[bs.length >> 1];
+    for (const c of cells) {
+        if (!c.glyph)
+            continue;
+        const g = c.glyph;
+        const dy = FLAT_BOTTOM.has(c.ch) ? -(med + (bottom(g) - med) * 0.7) : -med;
+        const r = (v) => Math.round(v * 10) / 10;
+        g.s = g.s.map((st) => st.map((v, i) => (i % 2 ? r(v + dy) : v)));
+        if (g.i)
+            g.i = [g.i[0], r(g.i[1] + dy)];
+        if (g.o)
+            g.o = [g.o[0], r(g.o[1] + dy)];
+    }
+}
+/**
+ * Прочитать весь лист. По умолчанию — по найденным угловым меткам. Если метки не попали в кадр,
+ * можно передать опорные точки сами: ref — точки листа (мм, например GRID_CORNERS), at — где они на фото.
+ */
+export function readTemplate(g, at, ref = MARKS) {
+    const m = at ?? findMarks(g);
     if (!m)
         throw new Error('не нашёл четыре чёрные метки по углам листа — снимите лист целиком, сверху, без теней');
-    const H = homography(MARKS, m);
+    const H = homography(ref, m);
     const cells = templateCells().map((c) => ({ ch: c.ch, glyph: readCell(g, H, c) }));
     const glyphs = {};
     let filled = 0;
@@ -359,5 +550,6 @@ export function readTemplate(g, marks) {
         (glyphs[c.ch] ??= []).push(c.glyph);
         filled++;
     }
-    return { marks: m, cells, glyphs, filled };
+    alignBaselines(cells);
+    return { marks: MARKS.map(([x, y]) => project(H, x, y)), cells, glyphs, filled };
 }

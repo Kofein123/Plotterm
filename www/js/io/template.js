@@ -25,6 +25,12 @@ const DIGITS = '0123456789';
 const PUNCT = '.,:;!?-—()«»"/+=%№<>~';
 /** Символы листа по порядку клеток: всё по разу, строчные — второй раз (их больше всего в тексте). */
 export const TEMPLATE_CHARS = [...LOWER, ...KAZ_LOWER, ...UPPER, ...KAZ_UPPER, ...DIGITS, ...PUNCT, ...LOWER, ...KAZ_LOWER].slice(0, COLS * ROWS);
+/** Углы таблицы (мм): левый и правый верх, правый и левый низ последнего полного ряда — запасные опорные точки. */
+export const GRID_CORNERS = (() => {
+    const full = Math.floor(TEMPLATE_CHARS.length / COLS);
+    const x1 = GRID_X + COLS * CELL_W, y1 = GRID_Y + full * CELL_H;
+    return [[GRID_X, GRID_Y], [x1, GRID_Y], [x1, y1], [GRID_X, y1]];
+})();
 export function templateCells() {
     return TEMPLATE_CHARS.map((ch, i) => {
         const col = i % COLS;

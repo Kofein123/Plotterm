@@ -41,6 +41,13 @@ export interface TemplateCell {
   baseline: number;
 }
 
+/** Углы таблицы (мм): левый и правый верх, правый и левый низ последнего полного ряда — запасные опорные точки. */
+export const GRID_CORNERS: [number, number][] = (() => {
+  const full = Math.floor(TEMPLATE_CHARS.length / COLS);
+  const x1 = GRID_X + COLS * CELL_W, y1 = GRID_Y + full * CELL_H;
+  return [[GRID_X, GRID_Y], [x1, GRID_Y], [x1, y1], [GRID_X, y1]];
+})();
+
 export function templateCells(): TemplateCell[] {
   return TEMPLATE_CHARS.map((ch, i) => {
     const col = i % COLS;

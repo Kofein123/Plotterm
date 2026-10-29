@@ -9,7 +9,7 @@ const font = BUILTIN_FONTS.find((f) => f.id === 'gost-b')!;
 const PX = 8; // пикселей на мм в растре листа
 
 /** Лист с «написанными» буквами ГОСТ Б (штрих 0,5 мм) в растре PX пикс/мм. */
-function drawSheet(): { sheet: Gray; written: Map<string, number[][]> } {
+function drawSheet(lineLum = 200, writeH = X_HEIGHT): { sheet: Gray; written: Map<string, number[][]> } {
   const W = SHEET_W * PX, H = SHEET_H * PX;
   const data = new Uint8Array(W * H).fill(246);
   const dot = (x: number, y: number, r: number, v: number) => {
@@ -26,11 +26,13 @@ function drawSheet(): { sheet: Gray; written: Map<string, number[][]> } {
   for (const [cx, cy] of MARKS)
     for (let y = cy - MARK_SIZE / 2; y <= cy + MARK_SIZE / 2; y += 1 / PX) line(cx - MARK_SIZE / 2, y, cx + MARK_SIZE / 2, y, 0.1, 15);
   const written = new Map<string, number[][]>();
-  const k = X_HEIGHT / font.xHeight;
+  const k = writeH / font.xHeight;
   for (const c of templateCells()) {
     // светлые направляющие, как на печати
-    line(c.x + 1, c.baseline, c.x + c.w - 1, c.baseline, 0.12, 200);
-    line(c.x, c.y - 3, c.x + c.w, c.y - 3, 0.1, 215);
+    line(c.x + 1, c.baseline, c.x + c.w - 1, c.baseline, 0.12, lineLum);
+    line(c.x, c.y - 3, c.x + c.w, c.y - 3, 0.1, lineLum + 15);
+    for (let x = c.x + 1; x < c.x + c.w - 1; x += 1.6) line(x, c.baseline - X_HEIGHT, x + 0.8, c.baseline - X_HEIGHT, 0.1, lineLum + 15);
+    line(c.x, c.y - 3, c.x, c.y + c.h, 0.1, lineLum + 15);
     if (written.has(c.ch)) continue; // второй экземпляр строчных оставляем пустым
     const g = font.glyphs.get(c.ch)?.[0];
     if (!g) continue;
@@ -102,8 +104,8 @@ test('порядок штрихов: слева направо, вертикал
   assert.ok(area > 0, 'против часовой');
 });
 
-test('фото листа в перспективе: метки найдены, буквы сняты близко к написанным', () => {
-  const { sheet, written } = drawSheet();
+function checkPhoto(lineLum: number, writeH = X_HEIGHT, maxDev = 12) {
+  const { sheet, written } = drawSheet(lineLum, writeH);
   const corners: [number, number][] = [[140, 170], [1330, 120], [1400, 1830], [95, 1880]];
   const photo = photograph(sheet, corners, 1500, 2000);
   const marks = findMarks(photo);
@@ -124,14 +126,21 @@ test('фото листа в перспективе: метки найдены, 
     const orig = written.get(ch)!;
     let minX = Infinity;
     for (const s of orig) for (let i = 0; i < s.length; i += 2) minX = Math.min(minX, s[i]);
-    const k = 100 / font.xHeight;
+    const k = (100 / font.xHeight) * (writeH / X_HEIGHT);
     const o = orig.map((s) => s.map((v, i) => (i % 2 === 0 ? (v - minX) * k : v * k)));
     const d = Math.max(chamfer(o, g!.s), chamfer(g!.s, o));
     if (d > worst) { worst = d; worstCh = ch; }
   }
   // 100 единиц = x-высота 3,5 мм; скелет скругляет острые углы ГОСТ (м, 4) — до ≈ 10 ед. ≈ 0,35 мм
-  assert.ok(worst < 12, `хуже всего «${worstCh}»: ${worst.toFixed(1)} ед.`);
-});
+  assert.ok(worst < maxDev, `хуже всего «${worstCh}»: ${worst.toFixed(1)} ед.`);
+}
+
+test('фото листа в перспективе: метки найдены, буквы сняты близко к написанным', () => checkPhoto(200));
+
+// ч/б принтер печатает голубые линии серыми — почти как чернила; пишут обычно чуть ниже пунктира.
+// Линию отличаем от букв только по толщине, поэтому штрих, лежащий вдоль линии (низ «1»), теряет
+// кусочек — допуск шире (≈ 0,6 мм). Настоящий растровый лист проверен вручную и снимается чисто.
+test('тёмные печатные линии клетки не попадают в буквы', () => checkPhoto(130, 3, 18));
 
 test('без меток — понятная ошибка', () => {
   const blank: Gray = { w: 400, h: 600, data: new Uint8Array(400 * 600).fill(240) };
