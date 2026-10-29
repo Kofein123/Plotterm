@@ -215,6 +215,49 @@ function flatten(lum: Uint8Array, W: number, H: number, r: number): Uint8Array {
   return out;
 }
 
+/** Гауссово сглаживание точек вдоль ломаной (sigma — в пикселях пути); замкнутую петлю гладим по кругу. */
+function smoothChain(p: number[], sigma: number): number[] {
+  const n = p.length / 2;
+  if (n < 4) return p;
+  const closed = Math.hypot(p[0] - p[p.length - 2], p[1] - p[p.length - 1]) < 2;
+  const r = Math.ceil(sigma * 2);
+  const w = Array.from({ length: r * 2 + 1 }, (_, k) => Math.exp(-((k - r) ** 2) / (2 * sigma * sigma)));
+  const out = p.slice();
+  for (let i = 0; i < n; i++) {
+    if (!closed && (i === 0 || i === n - 1)) continue;
+    let sx = 0, sy = 0, sw = 0;
+    for (let k = -r; k <= r; k++) {
+      let j = i + k;
+      if (closed) j = ((j % (n - 1)) + (n - 1)) % (n - 1);
+      else if (j < 0 || j >= n) continue;
+      // у открытого конца окно сужаем симметрично, иначе конец штриха «съёживается»
+      if (!closed && (i - Math.abs(k) < 0 || i + Math.abs(k) > n - 1)) continue;
+      sx += p[j * 2] * w[k + r];
+      sy += p[j * 2 + 1] * w[k + r];
+      sw += w[k + r];
+    }
+    out[i * 2] = sx / sw;
+    out[i * 2 + 1] = sy / sw;
+  }
+  if (closed) { out[out.length - 2] = out[0]; out[out.length - 1] = out[1]; }
+  return out;
+}
+
+/** Срезание углов Чайкина: ломаная становится плавной кривой, концы на месте. */
+function chaikin(p: number[], passes: number): number[] {
+  let cur = p;
+  for (let k = 0; k < passes && cur.length >= 6; k++) {
+    const out = [cur[0], cur[1]];
+    for (let i = 0; i + 3 < cur.length; i += 2) {
+      const [x0, y0, x1, y1] = [cur[i], cur[i + 1], cur[i + 2], cur[i + 3]];
+      out.push(x0 * 0.75 + x1 * 0.25, y0 * 0.75 + y1 * 0.25, x0 * 0.25 + x1 * 0.75, y0 * 0.25 + y1 * 0.75);
+    }
+    out.push(cur[cur.length - 2], cur[cur.length - 1]);
+    cur = out;
+  }
+  return cur;
+}
+
 /** символы, у которых бывают отдельные точки; у остальных точка — случайная капля пасты */
 const DOTTED = /[ёйіЁЙІijäöü.,:;!?"%№…«»*÷]/u;
 
@@ -325,7 +368,8 @@ export function readCell(g: Gray, H: Homography, cell: TemplateCell): GlyphData 
   const basePx = foundBase ?? by;
   const strokes: number[][] = [];
   for (const p of paths) {
-    const simp = simplify(smooth(p), 0.5);
+    // скелет из пикселей идёт «лесенкой»: гладим вдоль штриха на ~0,3 мм, затем скругляем углы ломаной
+    const simp = chaikin(simplify(smoothChain(smooth(p), 0.3 * RES), 0.35), 2);
     const out: number[] = [];
     for (let i = 0; i < simp.length; i += 2) out.push(simp[i] * k, (basePx - simp[i + 1]) * k);
     if (out.length >= 4) strokes.push(out);
