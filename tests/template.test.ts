@@ -44,12 +44,16 @@ function drawSheet(lineLum = 200, writeH = X_HEIGHT, sheetNo = 1): { sheet: Gray
 }
 
 /** Снимок листа в перспективе на тёмном столе. */
-function photograph(sheet: Gray, corners: [number, number][], w: number, h: number): Gray {
+function photograph(sheet: Gray, corners: [number, number][], w: number, h: number, bend = 0): Gray {
   const inv = homography(corners, MARKS); // фото → лист (мм)
   const data = new Uint8Array(w * h);
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++) {
-      const [mx, my] = project(inv, x + 0.5, y + 0.5);
+      let [mx, my] = project(inv, x + 0.5, y + 0.5);
+      // выгнутый лист: середина сдвинута относительно меток, к краям сдвиг сходит на нет
+      const bx = Math.sin((Math.PI * mx) / SHEET_W) * Math.sin((Math.PI * my) / SHEET_H);
+      mx += bend * bx;
+      my += bend * bx * 0.8;
       const sx = Math.floor(mx * PX), sy = Math.floor(my * PX);
       data[y * w + x] = sx < 0 || sy < 0 || sx >= sheet.w || sy >= sheet.h ? 85 : sheet.data[sy * sheet.w + sx];
     }
@@ -108,10 +112,10 @@ test('порядок штрихов: слева направо, вертикал
   assert.ok(area > 0, 'против часовой');
 });
 
-function checkPhoto(lineLum: number, writeH = X_HEIGHT, maxDev = 12, sheetNo = 1, chars = 'абвгдежзиклмнопрстуфхцчшщэюяБДЖЩӘҚ0123456789') {
+function checkPhoto(lineLum: number, writeH = X_HEIGHT, maxDev = 14, sheetNo = 1, chars = 'абвгдежзиклмнопрстуфхцчшщэюяБДЖЩӘҚ0123456789', bend = 0) {
   const { sheet, written } = drawSheet(lineLum, writeH, sheetNo);
   const corners: [number, number][] = [[140, 170], [1330, 120], [1400, 1830], [95, 1880]];
-  const photo = photograph(sheet, corners, 1500, 2000);
+  const photo = photograph(sheet, corners, 1500, 2000, bend);
   const marks = findMarks(photo);
   assert.ok(marks, 'метки не найдены');
   marks!.forEach(([x, y], i) => assert.ok(Math.hypot(x - corners[i][0], y - corners[i][1]) < 4, `метка ${i}: ${x},${y}`));
@@ -130,12 +134,14 @@ function checkPhoto(lineLum: number, writeH = X_HEIGHT, maxDev = 12, sheetNo = 1
     const orig = written.get(ch)!;
     let minX = Infinity;
     for (const s of orig) for (let i = 0; i < s.length; i += 2) minX = Math.min(minX, s[i]);
-    const k = (100 / font.xHeight) * (writeH / X_HEIGHT);
+    const k = 100 / font.xHeight; // импорт приводит x-высоту к 100 единицам, как бы крупно ни писали
     const o = orig.map((s) => s.map((v, i) => (i % 2 === 0 ? (v - minX) * k : v * k)));
-    const d = Math.max(chamfer(o, g!.s), chamfer(g!.s, o));
+    // ошибку меряем в мм-эквиваленте листа (100 ед. = 3,5 мм), иначе мелкое письмо после масштаба «ошибается» сильнее
+    const d = Math.max(chamfer(o, g!.s), chamfer(g!.s, o)) * (writeH / X_HEIGHT);
     if (d > worst) { worst = d; worstCh = ch; }
   }
-  // 100 единиц = x-высота 3,5 мм; скелет скругляет острые углы ГОСТ (м, 4) — до ≈ 10 ед. ≈ 0,35 мм
+  // 100 единиц = x-высота 3,5 мм; скелет скругляет острые углы ГОСТ (м, 4) — до ≈ 10 ед. ≈ 0,35 мм;
+  // добор бледных пикселей у штриха (нужен для светлой пасты на реальном фото) добавляет ещё ≈ 2 ед.
   assert.ok(worst < maxDev, `хуже всего «${worstCh}»: ${worst.toFixed(1)} ед.`);
 }
 
@@ -144,10 +150,10 @@ test('фото листа в перспективе: метки найдены, 
 // ч/б принтер печатает голубые линии серыми — почти как чернила; пишут обычно чуть ниже пунктира.
 // Линию отличаем от букв только по толщине, поэтому штрих, лежащий вдоль линии (низ «1»), теряет
 // кусочек — допуск шире (≈ 0,6 мм). Настоящий растровый лист проверен вручную и снимается чисто.
-test('тёмные печатные линии клетки не попадают в буквы', () => checkPhoto(130, 3, 18));
+test('тёмные печатные линии клетки не попадают в буквы', () => checkPhoto(130, 3, 20));
 
 // «w» ГОСТ при x-высоте 3,5 мм — острые узкие зубцы, скелет их сглаживает, поэтому в сравнении её нет
-test('лист 2: латиница снимается', () => checkPhoto(200, X_HEIGHT, 12, 2, 'abdeghkmnpqrstuvxyzFGIMNQRS'));
+test('лист 2: латиница снимается', () => checkPhoto(200, X_HEIGHT, 14, 2, 'abdeghkmnpqrstuvxyzFGIMNQRS'));
 
 test('углы таблицы вручную вместо меток дают те же буквы', () => {
   const { sheet, written } = drawSheet();
@@ -159,6 +165,10 @@ test('углы таблицы вручную вместо меток дают т
   const res = readTemplate(photo, taps, GRID_CORNERS);
   assert.ok(res.filled >= written.size - 6 && res.filled <= written.size, `снято ${res.filled} из ${written.size}`);
 });
+
+// бумага на столе выгибается: середина таблицы уезжает от меток на 3 мм, клетки уточняем по печатным линиям.
+// Изгиб чуть растягивает и сами буквы, поэтому допуск шире; без уточнения клеток здесь ≈ 40 ед.
+test('выгнутый лист: буквы не режутся краем клетки', () => checkPhoto(200, X_HEIGHT, 17, 1, undefined, 3));
 
 test('без меток — понятная ошибка', () => {
   const blank: Gray = { w: 400, h: 600, data: new Uint8Array(400 * 600).fill(240) };

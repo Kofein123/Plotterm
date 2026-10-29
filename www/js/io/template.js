@@ -13,7 +13,7 @@ const ROWS = 16;
 const GRID_X = 14;
 const GRID_Y = 22;
 /** полоса с подписью буквы сверху клетки */
-const LABEL_H = 3;
+export const LABEL_H = 3;
 /** базовая линия от верха клетки и высота строчной по направляющей */
 export const BASELINE = 12;
 export const X_HEIGHT = 3.5;

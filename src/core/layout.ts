@@ -4,7 +4,7 @@ import { resolveGlyph } from '../fonts/fonts.ts';
 import { parseMarkup, type CharItem } from './markup.ts';
 import { hyphenPoints } from './hyphen.ts';
 import { rng, type Rng } from './rng.ts';
-import { connector, isHighExit } from './cursive.ts';
+import { connector, strokeTangent, trimEnd, trimStart } from './cursive.ts';
 import type { LayoutResult, LayoutTrace, PageLayout, PaperSettings, Stroke, TypographySettings } from './types.ts';
 
 export interface LayoutInput {
@@ -73,6 +73,8 @@ export function layoutText(inp: LayoutInput): LayoutResult {
   const lastVariant = new Map<string, number>();
   const slantK = Math.tan((typo.slant * Math.PI) / 180);
   const cursive = typo.cursive !== false;
+  const joinTrim = typo.xHeight * 0.18;
+  const joinProbe = Math.max(0.2, typo.xHeight * 0.12);
   const trace: LayoutTrace | undefined = inp.trace ? { glyphs: [], runs: [] } : undefined;
 
   const charWidth = (it: CharItem) => {
@@ -247,7 +249,8 @@ export function layoutText(inp: LayoutInput): LayoutResult {
       // связное письмо: копим один непрерывный штрих на слово
       let run: number[] = [];
       let joints: number[] = [];
-      let prev: { x: number; y: number; high: boolean } | null = null;
+      let prev: { x: number; y: number; t: [number, number] } | null = null;
+      let prevStart = 0;
       const flushRun = () => {
         if (run.length >= 4) {
           pg.strokes.push({ pts: run, line: lineNo });
@@ -264,12 +267,21 @@ export function layoutText(inp: LayoutInput): LayoutResult {
         if (trace && out.strokes.length) trace.glyphs.push({ ch: c.item.ch, page: pg.index, strokes: out.strokes });
         const joinable = cursive && out.aIn !== null && out.aOut !== null && !c.item.script;
         if (joinable) {
+          let main = out.strokes[0];
           if (prev !== null && run.length) {
+            // концы букв у стыка срезаем: связке нужен разгон, чтобы плавно повернуть из одной буквы в другую
+            const keep = Math.max(prevStart + 4, trimEnd(run, joinTrim));
+            run.length = keep;
+            main = main.slice(trimStart(main, joinTrim));
             joints.push(run.length / 2 - 1);
-            run.push(...connector(prev, out.aIn!, prev.high));
+            const from = { x: run[run.length - 2], y: run[run.length - 1] };
+            const tOut = strokeTangent(run, true, joinProbe) ?? [1, 0];
+            const tIn = strokeTangent(main, false, joinProbe) ?? [1, 0];
+            run.push(...connector(from, { x: main[0], y: main[1] }, tOut, tIn));
             joints.push(run.length / 2);
           }
-          run.push(...out.strokes[0]);
+          prevStart = run.length;
+          run.push(...main);
           for (let i = 1; i < out.strokes.length; i++) pg.strokes.push({ pts: out.strokes[i], line: lineNo });
           prev = out.aOut;
         } else {
@@ -328,13 +340,14 @@ export function layoutText(inp: LayoutInput): LayoutResult {
       }
       strokes.push(pts);
     }
-    let aIn: { x: number; y: number; high: boolean } | null = null;
-    let aOut: { x: number; y: number; high: boolean } | null = null;
+    // связка идёт от настоящего конца главного штриха к настоящему началу следующего:
+    // i/o шрифта лишь говорят, что буква соединяется, и могут стоять в стороне от штриха
+    let aIn: { x: number; y: number; t: [number, number] } | null = null;
+    let aOut: { x: number; y: number; t: [number, number] } | null = null;
     if (g.glyph.i && g.glyph.o && strokes.length) {
-      const pi = tp(g.glyph.i[0], g.glyph.i[1]);
-      const po = tp(g.glyph.o[0], g.glyph.o[1]);
-      aIn = { x: pi[0], y: pi[1], high: isHighExit(g.glyph.i[1], font.xHeight) };
-      aOut = { x: po[0], y: po[1], high: isHighExit(g.glyph.o[1], font.xHeight) };
+      const m = strokes[0];
+      aIn = { x: m[0], y: m[1], t: [1, 0] };
+      aOut = { x: m[m.length - 2], y: m[m.length - 1], t: [1, 0] };
     }
     return { strokes, aIn, aOut };
   }

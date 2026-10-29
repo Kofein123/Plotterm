@@ -1,7 +1,7 @@
 import { CUSTOM_X_HEIGHT } from "../fonts/fonts.js";
 import { simplify } from "../core/geometry.js";
 import { extractDots, pruneStairs, smooth, thin, trace } from "./outlinefont.js";
-import { MARKS, MARK_SIZE, SHEET_W, X_HEIGHT, templateCells } from "./template.js";
+import { LABEL_H, MARKS, MARK_SIZE, SHEET_W, X_HEIGHT, templateCells } from "./template.js";
 /** Гомография по четырём парам точек: from (лист, мм) → to (фото, пиксели). */
 export function homography(from, to) {
     const A = [];
@@ -163,10 +163,81 @@ function cellLum(g, H, cell) {
         }
     return { lum, W, Hh, y0 };
 }
+/**
+ * Лист на фото редко лежит идеально плоско: выгнутая бумага сдвигает клетки на миллиметр-два от расчётных,
+ * и буква режется краем. Уточняем положение клетки по её печатным линиям: края клетки и базовая линия
+ * тянутся на всю ширину и дают острые «гребни» в профиле яркости, буквы — нет.
+ */
+export function cellShift(g, H, cell, SHIFT = 2.5) {
+    const R = 5; // пикс/мм — для поиска линий хватает
+    const top = cell.y - LABEL_H;
+    const x0 = cell.x - SHIFT - 1, y0 = top - SHIFT - 1;
+    const W = Math.round((cell.w + 2 * SHIFT + 2) * R), Hh = Math.round((cell.h + LABEL_H + 2 * SHIFT + 2) * R);
+    const d = new Uint8Array(W * Hh);
+    for (let y = 0; y < Hh; y++)
+        for (let x = 0; x < W; x++) {
+            const [u, v] = project(H, x0 + (x + 0.5) / R, y0 + (y + 0.5) / R);
+            d[y * W + x] = 255 - sample(g, u, v);
+        }
+    // медиана по строке/столбцу: печатная линия тёмная по всей длине, штрих буквы — лишь на части
+    const med = (vals) => vals.sort((a, b) => a - b)[vals.length >> 1];
+    const col = Float64Array.from({ length: W }, (_, x) => med(Array.from({ length: Hh }, (_, y) => d[y * W + x])));
+    const row = Float64Array.from({ length: Hh }, (_, y) => med(Array.from(d.subarray(y * W, y * W + W))));
+    // гребень: тёмная полоса уже ~1 мм светлее соседей
+    const ridge = (p, mm) => {
+        const i = Math.round((mm + 0.0) * R);
+        const at = (k) => p[Math.max(0, Math.min(p.length - 1, k))];
+        const c = Math.max(at(i - 1), at(i), at(i + 1));
+        return c - (at(i - 4) + at(i + 4)) / 2;
+    };
+    const best = (p, lines) => {
+        let bs = 0, bv = -Infinity, zero = 0;
+        for (let s = -SHIFT; s <= SHIFT + 1e-9; s += 1 / R) {
+            const v = lines.reduce((a, m) => a + ridge(p, m + s), 0);
+            if (Math.abs(s) < 1e-9)
+                zero = v;
+            if (v > bv) {
+                bv = v;
+                bs = s;
+            }
+        }
+        // сдвигаем, только если линии на новом месте заметно чётче, чем на расчётном
+        return bv > zero * 1.15 + 1e-9 ? bs : 0;
+    };
+    const dx = best(col, [cell.x - x0, cell.x + cell.w - x0]);
+    const dy = best(row, [top - y0, cell.baseline - y0, cell.y + cell.h - y0]);
+    return [dx, dy];
+}
+function flatten(lum, W, H, r) {
+    const tmp = new Uint8Array(W * H), bg = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++)
+        for (let x = 0; x < W; x++) {
+            let m = 0;
+            for (let k = Math.max(0, x - r); k <= Math.min(W - 1, x + r); k++)
+                m = Math.max(m, lum[y * W + k]);
+            tmp[y * W + x] = m;
+        }
+    for (let x = 0; x < W; x++)
+        for (let y = 0; y < H; y++) {
+            let m = 0;
+            for (let k = Math.max(0, y - r); k <= Math.min(H - 1, y + r); k++)
+                m = Math.max(m, tmp[k * W + x]);
+            bg[y * W + x] = m;
+        }
+    const out = new Uint8Array(W * H);
+    for (let i = 0; i < out.length; i++)
+        out[i] = bg[i] ? Math.min(255, Math.round((lum[i] * 255) / bg[i])) : 255;
+    return out;
+}
+/** символы, у которых бывают отдельные точки; у остальных точка — случайная капля пасты */
+const DOTTED = /[ёйіЁЙІijäöü.,:;!?"%№…«»*÷]/u;
 /** Чернила клетки → глиф в единицах шрифта (x-высота = 100, базовая линия y = 0). */
 export function readCell(g, H, cell) {
     const inset = INSET;
-    const { lum, W, Hh, y0 } = cellLum(g, H, cell);
+    const { lum: raw, W, Hh, y0 } = cellLum(g, H, cell);
+    // тень от руки или телефона: яркость бумаги меняется даже внутри клетки. Делим на местный фон —
+    // максимум в окне 3 мм (штрих уже, так что в окно всегда попадает бумага)
+    const lum = flatten(raw, W, Hh, Math.round(1.5 * RES));
     const paper = percentile(lum, 0.9);
     const thr = paper * 0.62;
     const bin = new Uint8Array(W * Hh);
@@ -176,6 +247,31 @@ export function readCell(g, H, cell) {
             bin[i] = 1;
             ink++;
         }
+    // гистерезис: светлая шариковая паста рвёт штрих; бледные пиксели берём, если они продолжают уверенный штрих —
+    // не дальше ~0,3 мм от него, иначе по серой печатной линии «натечёт» через всю клетку
+    const weak = paper * 0.75;
+    let front = [];
+    for (let i = 0; i < bin.length; i++)
+        if (bin[i])
+            front.push(i);
+    for (let step = 0; step < 3 && front.length; step++) {
+        const next = [];
+        for (const i of front) {
+            const x = i % W, y = (i / W) | 0;
+            for (let dy = -1; dy <= 1; dy++)
+                for (let dx = -1; dx <= 1; dx++) {
+                    const xx = x + dx, yy = y + dy;
+                    if (xx < 0 || yy < 0 || xx >= W || yy >= Hh)
+                        continue;
+                    const j = yy * W + xx;
+                    if (!bin[j] && lum[j] < weak) {
+                        bin[j] = 1;
+                        next.push(j);
+                    }
+                }
+        }
+        front = next;
+    }
     // печатные линии клетки (на ч/б принтере они выходят тёмными): базовая, пунктир x-высоты, края клетки
     const by = (cell.baseline - y0) * RES;
     // найденная на фото базовая линия точнее расчётной: лист бывает выгнут, а фото — с искажениями объектива
@@ -207,9 +303,76 @@ export function readCell(g, H, cell) {
     let skel = 0;
     for (let i = 0; i < bin.length; i++)
         skel += bin[i];
-    const paths = joinChains(trace(bin, W, Hh, Math.max(3, (before / Math.max(skel, 1)) * 0.9)), 2.5);
-    for (const [cx, cy, r] of dots)
+    let paths = joinChains(trace(bin, W, Hh, Math.max(3, (before / Math.max(skel, 1)) * 0.9)), 2.5);
+    // плоские огрызки печатной линии, пережившие стирание: на странице они выглядят как лишние точки
+    if (/[\p{L}\p{N}]/u.test(cell.ch) && paths.length > 1) {
+        const rows = [foundBase ?? by, (foundBase ?? by) - X_HEIGHT * RES];
+        const near = (p, q) => {
+            for (let i = 0; i < p.length; i += 2)
+                for (let j = 0; j < q.length; j += 2)
+                    if (Math.hypot(p[i] - q[j], p[i + 1] - q[j + 1]) < 0.6 * RES)
+                        return true;
+            return false;
+        };
+        paths = paths.filter((p) => {
+            if (paths.some((q) => q !== p && near(p, q)))
+                return true;
+            let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+            for (let i = 0; i < p.length; i += 2) {
+                x0 = Math.min(x0, p[i]);
+                x1 = Math.max(x1, p[i]);
+                y0 = Math.min(y0, p[i + 1]);
+                y1 = Math.max(y1, p[i + 1]);
+            }
+            const flat = x1 - x0 < 1.6 * RES && y1 - y0 < 0.4 * RES;
+            if (flat && rows.some((y) => Math.abs((y0 + y1) / 2 - y) < 0.7 * RES))
+                return false;
+            // остаток вертикального края клетки
+            const edge = x1 < 1.2 * RES || x0 > W - 1.2 * RES;
+            if (edge && x1 - x0 < 0.5 * RES && y1 - y0 > 2 * RES)
+                return false;
+            return true;
+        });
+    }
+    // выше 8 мм над строкой букв не бывает: это подпись клетки или чужая буква сверху
+    const ceiling = (foundBase ?? by) - 8 * RES;
+    paths = paths.filter((p) => p.some((v, i) => i % 2 === 1 && v > ceiling));
+    // крошечный отдельный штрих (меньше 0,7 мм) у буквы без точек — капля или соринка
+    if (!DOTTED.test(cell.ch) && paths.length > 1) {
+        const ext = (p) => {
+            let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+            for (let i = 0; i < p.length; i += 2) {
+                x0 = Math.min(x0, p[i]);
+                x1 = Math.max(x1, p[i]);
+                y0 = Math.min(y0, p[i + 1]);
+                y1 = Math.max(y1, p[i + 1]);
+            }
+            return Math.max(x1 - x0, y1 - y0);
+        };
+        const near = (p, q) => {
+            for (let i = 0; i < p.length; i += 2)
+                for (let j = 0; j < q.length; j += 2)
+                    if (Math.hypot(p[i] - q[j], p[i + 1] - q[j + 1]) < 0.6 * RES)
+                        return true;
+            return false;
+        };
+        const kept = paths.filter((p) => ext(p) >= 0.7 * RES || paths.some((q) => q !== p && near(p, q)));
+        if (kept.length)
+            paths = kept;
+    }
+    // точки над ё, й, і стоят выше пунктира; «точка» прямо на линии у буквы — это кусок штриха печатной линии
+    const lineYs = [foundBase ?? by, (foundBase ?? by) - X_HEIGHT * RES];
+    const isText = /[\p{L}\p{N}]/u.test(cell.ch);
+    for (const [cx, cy, r] of dots) {
+        if (cy < ceiling || !DOTTED.test(cell.ch))
+            continue;
+        // у ё, й, і точки только сверху
+        if (/\p{L}/u.test(cell.ch) && cy > (foundBase ?? by) - X_HEIGHT * RES * 0.45)
+            continue;
+        if (isText && lineYs.some((y) => Math.abs(cy - y) < 0.6 * RES))
+            continue;
         paths.push([cx - r * 0.35, cy, cx + r * 0.35, cy]);
+    }
     if (!paths.length)
         return null;
     const k = CUSTOM_X_HEIGHT / (X_HEIGHT * RES);
@@ -535,6 +698,108 @@ function alignBaselines(cells) {
             g.o = [g.o[0], r(g.o[1] + dy)];
     }
 }
+const FIT_RANGE = 3;
+/**
+ * Сдвиги отдельных клеток шумят (буква у края, пятно), а изгиб листа плавный. Приближаем их
+ * квадратичной поверхностью по всей таблице, дважды отбрасывая выбросы; упёршиеся в край поиска не берём.
+ */
+function fitShifts(cells, raw) {
+    const cx = 105, cy = 150, sc = 100;
+    const basis = (c) => {
+        const x = (c.x + c.w / 2 - cx) / sc, y = (c.y - cy) / sc;
+        return [1, x, y, x * y, x * x, y * y];
+    };
+    const solve = (rows, vals) => {
+        const n = 6;
+        const A = Array.from({ length: n }, () => new Array(n + 1).fill(0));
+        rows.forEach((b, k) => {
+            for (let i = 0; i < n; i++) {
+                for (let j = 0; j < n; j++)
+                    A[i][j] += b[i] * b[j];
+                A[i][n] += b[i] * vals[k];
+            }
+        });
+        for (let c = 0; c < n; c++) {
+            let p = c;
+            for (let r = c + 1; r < n; r++)
+                if (Math.abs(A[r][c]) > Math.abs(A[p][c]))
+                    p = r;
+            [A[c], A[p]] = [A[p], A[c]];
+            if (Math.abs(A[c][c]) < 1e-9)
+                return null;
+            for (let r = 0; r < n; r++) {
+                if (r === c)
+                    continue;
+                const f = A[r][c] / A[c][c];
+                for (let k = c; k <= n; k++)
+                    A[r][k] -= f * A[c][k];
+            }
+        }
+        return A.map((row, i) => row[n] / row[i]);
+    };
+    const axis = (d) => {
+        let idx = cells.map((_, i) => i).filter((i) => Math.abs(raw[i][d]) < FIT_RANGE - 0.05);
+        let coef = null;
+        for (let pass = 0; pass < 3 && idx.length >= 12; pass++) {
+            coef = solve(idx.map((i) => basis(cells[i])), idx.map((i) => raw[i][d]));
+            if (!coef)
+                return null;
+            const cf = coef;
+            idx = idx.filter((i) => Math.abs(basis(cells[i]).reduce((a, b, k) => a + b * cf[k], 0) - raw[i][d]) < 0.8);
+        }
+        return coef;
+    };
+    const kx = axis(0), ky = axis(1);
+    const ev = (k, c) => {
+        if (!k)
+            return 0;
+        const v = basis(c).reduce((a, b, i) => a + b * k[i], 0);
+        // доли миллиметра — шум подгонки, а не изгиб
+        return Math.abs(v) < 0.15 ? 0 : Math.max(-5, Math.min(5, v));
+    };
+    return (c) => [ev(kx, c), ev(ky, c)];
+}
+/** Строчные без выносных элементов — по ним меряем x-высоту; прописные без хвостов и надстрочных знаков. */
+const X_LETTERS = new Set([...'аеиклмнопстхчшыьэюяжгacemnorsuvwxz']);
+const CAPS = new Set([...'АБВГЕЖЗИКЛМНОПРСТУФХЧШЫЭЮЯABCDEFGHIKLMNOPRSTUVWXYZ']);
+/** у человека в конспектах прописные ≈ 1,6 строчной; в клетке шаблона их часто пишут мельче */
+const CAP_RATIO = 1.6;
+/**
+ * В шрифте x-высота — 100 единиц, а человек на листе пишет мельче или крупнее пунктира. Масштабируем весь лист
+ * так, чтобы средняя строчная стала 100, а слишком мелкие прописные дотягиваем до CAP_RATIO.
+ */
+function normalizeSizes(cells) {
+    const top = (g) => {
+        let m = -Infinity;
+        for (const s of g.s)
+            for (let i = 1; i < s.length; i += 2)
+                m = Math.max(m, s[i]);
+        return m;
+    };
+    const median = (set) => {
+        const v = cells.filter((c) => c.glyph && set.has(c.ch)).map((c) => top(c.glyph)).sort((a, b) => a - b);
+        return v.length >= 5 ? v[v.length >> 1] : null;
+    };
+    const xh = median(X_LETTERS);
+    if (!xh || xh <= 0)
+        return;
+    const cap = median(CAPS);
+    const k = 100 / xh;
+    const capK = cap && cap / xh < CAP_RATIO - 0.25 ? (CAP_RATIO * xh) / cap : 1;
+    const r = (v) => Math.round(v * 10) / 10;
+    for (const c of cells) {
+        if (!c.glyph)
+            continue;
+        const g = c.glyph;
+        const f = k * (/\p{Lu}/u.test(c.ch) ? capK : 1);
+        g.s = g.s.map((st) => st.map((v) => r(v * f)));
+        g.w = r(g.w * f);
+        if (g.i)
+            g.i = [r(g.i[0] * f), r(g.i[1] * f)];
+        if (g.o)
+            g.o = [r(g.o[0] * f), r(g.o[1] * f)];
+    }
+}
 /**
  * Прочитать весь лист. По умолчанию — по найденным угловым меткам. Если метки не попали в кадр,
  * можно передать опорные точки сами: ref — точки листа (мм, например GRID_CORNERS), at — где они на фото.
@@ -544,7 +809,15 @@ export function readTemplate(g, at, ref = MARKS, sheet = 1) {
     if (!m)
         throw new Error('не нашёл четыре чёрные метки по углам листа — снимите лист целиком, сверху, без теней');
     const H = homography(ref, m);
-    const cells = templateCells(sheet).map((c) => ({ ch: c.ch, glyph: readCell(g, H, c) }));
+    const tc = templateCells(sheet);
+    const fit = fitShifts(tc, tc.map((c) => cellShift(g, H, c, FIT_RANGE)));
+    const cells = tc.map((c) => {
+        // плавный изгиб листа по всей таблице + небольшое уточнение по линиям самой клетки
+        const [fx, fy] = fit(c);
+        const moved = { ...c, x: c.x + fx, y: c.y + fy, baseline: c.baseline + fy };
+        const [dx, dy] = cellShift(g, H, moved, 0.8);
+        return { ch: c.ch, glyph: readCell(g, H, { ...moved, x: moved.x + dx, y: moved.y + dy, baseline: moved.baseline + dy }) };
+    });
     const glyphs = {};
     let filled = 0;
     for (const c of cells) {
@@ -554,5 +827,6 @@ export function readTemplate(g, at, ref = MARKS, sheet = 1) {
         filled++;
     }
     alignBaselines(cells);
+    normalizeSizes(cells);
     return { marks: MARKS.map(([x, y]) => project(H, x, y)), cells, glyphs, filled };
 }
