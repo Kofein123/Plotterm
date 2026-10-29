@@ -10,6 +10,7 @@ import { importOutlineFont } from "../../io/outlinefont.js";
 import { GRID_CORNERS, templateSvg } from "../../io/template.js";
 import { findMarks, readTemplate } from "../../io/templateImport.js";
 import { imageFileToGray } from "../../io/image.js";
+import { addVariants } from "../../fonts/variants.js";
 const GROUPS = {
     lower: 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя',
     upper: 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ',
@@ -217,6 +218,20 @@ function Editor() {
             drawing = null;
         } }));
 }
+/** У шрифта из файла каждая буква одна — добавляем изогнутые копии, чтобы одинаковые буквы не совпадали. */
+async function makeVariants() {
+    const r = editing.peek();
+    if (!r)
+        return;
+    const { glyphs, added } = addVariants(r.glyphs, CUSTOM_X_HEIGHT, 4);
+    if (!added) {
+        toast('У всех букв уже есть по 4 варианта и больше.', 'info');
+        return;
+    }
+    editing.value = { ...r, glyphs, updatedAt: Date.now() };
+    await persist();
+    toast(`Добавлено ${added} вариантов: теперь у каждой буквы по 4 начертания.`, 'ok', 7000);
+}
 async function exportFont() {
     const r = editing.peek();
     if (!r)
@@ -402,7 +417,8 @@ export function HandTab() {
                     " \u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u0448\u0440\u0438\u0444\u0442 (.ttf .otf .woff)"),
                 () => (editing.value ? h(Btn, { small: true, kind: "ghost", onClick: exportFont },
                     h(Icon, { name: "download", size: 14 }),
-                    " \u042D\u043A\u0441\u043F\u043E\u0440\u0442") : null)),
+                    " \u042D\u043A\u0441\u043F\u043E\u0440\u0442") : null),
+                () => (editing.value ? h(Btn, { small: true, kind: "ghost", onClick: makeVariants, title: "\u041A\u0430\u0436\u0434\u0430\u044F \u0431\u0443\u043A\u0432\u0430 \u043F\u043E\u043B\u0443\u0447\u0438\u0442 4 \u0441\u043B\u0435\u0433\u043A\u0430 \u0440\u0430\u0437\u043D\u044B\u0445 \u043D\u0430\u0447\u0435\u0440\u0442\u0430\u043D\u0438\u044F \u2014 \u0436\u0438\u0432\u0435\u0435 \u0434\u043B\u044F \u0448\u0440\u0438\u0444\u0442\u043E\u0432 \u0438\u0437 .ttf" }, "\u0412\u0430\u0440\u0438\u0430\u043D\u0442\u044B \u0431\u0443\u043A\u0432 \u00D74") : null)),
             h("div", { class: "muted small" }, "\u041F\u0440\u043E\u0449\u0435 \u0432\u0441\u0435\u0433\u043E \u2014 \u043B\u0438\u0441\u0442-\u0448\u0430\u0431\u043B\u043E\u043D: \u0440\u0430\u0441\u043F\u0435\u0447\u0430\u0442\u0430\u0442\u044C, \u043D\u0430\u043F\u0438\u0441\u0430\u0442\u044C \u043F\u043E \u0431\u0443\u043A\u0432\u0435 \u0432 \u043A\u043B\u0435\u0442\u043A\u0435 \u0441\u0432\u043E\u0435\u0439 \u0440\u0443\u0447\u043A\u043E\u0439, \u0441\u0444\u043E\u0442\u043E\u0433\u0440\u0430\u0444\u0438\u0440\u043E\u0432\u0430\u0442\u044C. \u041A\u0430\u0436\u0434\u044B\u0439 \u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D\u043D\u044B\u0439 \u043B\u0438\u0441\u0442 \u0434\u043E\u0431\u0430\u0432\u043B\u044F\u0435\u0442 \u0435\u0449\u0451 \u043E\u0434\u0438\u043D \u0432\u0430\u0440\u0438\u0430\u043D\u0442 \u043A\u0430\u0436\u0434\u043E\u0439 \u0431\u0443\u043A\u0432\u044B."),
             h(Segmented, { small: true, value: () => sheetNo.value, onChange: (v) => { sheetNo.value = v; }, options: [{ value: 1, label: 'Лист 1 · кириллица' }, { value: 2, label: 'Лист 2 · латиница, формулы' }] }),
             h("div", { class: "row wrap" },

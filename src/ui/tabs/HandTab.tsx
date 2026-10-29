@@ -11,6 +11,7 @@ import { importOutlineFont } from '../../io/outlinefont.ts';
 import { GRID_CORNERS, templateSvg } from '../../io/template.ts';
 import { findMarks, readTemplate, type Gray, type TemplateReadResult } from '../../io/templateImport.ts';
 import { imageFileToGray } from '../../io/image.ts';
+import { addVariants } from '../../fonts/variants.ts';
 
 const GROUPS: Record<string, string> = {
   lower: 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя',
@@ -224,6 +225,17 @@ function Editor() {
   );
 }
 
+/** У шрифта из файла каждая буква одна — добавляем изогнутые копии, чтобы одинаковые буквы не совпадали. */
+async function makeVariants() {
+  const r = editing.peek();
+  if (!r) return;
+  const { glyphs, added } = addVariants(r.glyphs, CUSTOM_X_HEIGHT, 4);
+  if (!added) { toast('У всех букв уже есть по 4 варианта и больше.', 'info'); return; }
+  editing.value = { ...r, glyphs, updatedAt: Date.now() };
+  await persist();
+  toast(`Добавлено ${added} вариантов: теперь у каждой буквы по 4 начертания.`, 'ok', 7000);
+}
+
 async function exportFont() {
   const r = editing.peek();
   if (!r) return;
@@ -428,6 +440,7 @@ export function HandTab() {
             <Icon name="upload" size={14} /> Загрузить шрифт (.ttf .otf .woff)
           </Btn>
           {() => (editing.value ? <Btn small kind="ghost" onClick={exportFont}><Icon name="download" size={14} /> Экспорт</Btn> : null)}
+          {() => (editing.value ? <Btn small kind="ghost" onClick={makeVariants} title="Каждая буква получит 4 слегка разных начертания — живее для шрифтов из .ttf">Варианты букв ×4</Btn> : null)}
         </div>
         <div class="muted small">
           Проще всего — лист-шаблон: распечатать, написать по букве в клетке своей ручкой, сфотографировать.
