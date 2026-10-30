@@ -32,6 +32,7 @@ function fillMissing(f, base) {
 const gostAFont = fromData(gostA);
 const gostBFont = fromData(gostB);
 // В прописи нарисованы только строчные а–я: заглавные, цифры и знаки берём из ГОСТ тип Б.
+// У них нет точек входа и выхода, поэтому они пишутся раздельно — как печатные от руки.
 const propisFont = fillMissing(fromData(propis), gostBFont);
 export const BUILTIN_FONTS = [gostAFont, gostBFont, propisFont];
 export const CUSTOM_X_HEIGHT = 100;

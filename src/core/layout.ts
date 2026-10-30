@@ -5,7 +5,7 @@ import { parseMarkup, type CharItem } from './markup.ts';
 import { hyphenPoints } from './hyphen.ts';
 import { rng, type Rng } from './rng.ts';
 import { connector, isHighExit } from './cursive.ts';
-import type { LayoutResult, PageLayout, PaperSettings, Stroke, TypographySettings } from './types.ts';
+import type { LayoutResult, LayoutTrace, PageLayout, PaperSettings, Stroke, TypographySettings } from './types.ts';
 
 export interface LayoutInput {
   text: string;
@@ -14,6 +14,8 @@ export interface LayoutInput {
   paper: PaperSettings;
   /** узел сетки / линия линейки (бумажные координаты) из калибровки */
   gridOrigin?: [number, number] | null;
+  /** собрать трассу вёрстки (каждая буква и каждый связный штрих) — для метрик качества */
+  trace?: boolean;
 }
 
 const SCRIPT_SCALE = 0.62;
@@ -71,6 +73,7 @@ export function layoutText(inp: LayoutInput): LayoutResult {
   const lastVariant = new Map<string, number>();
   const slantK = Math.tan((typo.slant * Math.PI) / 180);
   const cursive = typo.cursive !== false;
+  const trace: LayoutTrace | undefined = inp.trace ? { glyphs: [], runs: [] } : undefined;
 
   const charWidth = (it: CharItem) => {
     const g = resolveGlyph(font, it.ch);
@@ -243,19 +246,29 @@ export function layoutText(inp: LayoutInput): LayoutResult {
     words.forEach((w, wi) => {
       // связное письмо: копим один непрерывный штрих на слово
       let run: number[] = [];
+      let joints: number[] = [];
       let prev: { x: number; y: number; high: boolean } | null = null;
       const flushRun = () => {
-        if (run.length >= 4) pg.strokes.push({ pts: run, line: lineNo });
+        if (run.length >= 4) {
+          pg.strokes.push({ pts: run, line: lineNo });
+          if (trace && joints.length) trace.runs.push({ page: pg.index, pts: run, joints });
+        }
         run = [];
+        joints = [];
         prev = null;
       };
       for (const c of w) {
         if (c.item.underline && ulStart === null) ulStart = x;
         if (!c.item.underline) flushUnderline(x);
         const out = renderChar(c, x, baseline, drift, r);
+        if (trace && out.strokes.length) trace.glyphs.push({ ch: c.item.ch, page: pg.index, strokes: out.strokes });
         const joinable = cursive && out.aIn !== null && out.aOut !== null && !c.item.script;
         if (joinable) {
-          if (prev !== null && run.length) run.push(...connector(prev, out.aIn!, prev.high));
+          if (prev !== null && run.length) {
+            joints.push(run.length / 2 - 1);
+            run.push(...connector(prev, out.aIn!, prev.high));
+            joints.push(run.length / 2);
+          }
           run.push(...out.strokes[0]);
           for (let i = 1; i < out.strokes.length; i++) pg.strokes.push({ pts: out.strokes[i], line: lineNo });
           prev = out.aOut;
@@ -326,7 +339,7 @@ export function layoutText(inp: LayoutInput): LayoutResult {
     return { strokes, aIn, aOut };
   }
 
-  return { pages, missingChars: [...missing], chars: charCount };
+  return { pages, missingChars: [...missing], chars: charCount, trace };
 }
 
 /** Габариты набора штрихов. */

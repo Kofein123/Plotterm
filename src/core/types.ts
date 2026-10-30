@@ -19,11 +19,32 @@ export interface PageLayout {
   baselines: number[];
 }
 
+/** Экземпляр буквы на странице: штрихи уже в бумажных координатах (мм). */
+export interface GlyphInstance {
+  ch: string;
+  page: number;
+  strokes: number[][];
+}
+
+/** Связный штрих слова: joints — номера точек, где буква переходит в соединение и обратно. */
+export interface CursiveRun {
+  page: number;
+  pts: number[];
+  joints: number[];
+}
+
+export interface LayoutTrace {
+  glyphs: GlyphInstance[];
+  runs: CursiveRun[];
+}
+
 export interface LayoutResult {
   pages: PageLayout[];
   missingChars: string[];
   /** символов в тексте (без пробелов) */
   chars: number;
+  /** трасса вёрстки, если просили `trace: true` */
+  trace?: LayoutTrace;
 }
 
 export type PaperTemplate = 'a4' | 'grid' | 'ruled' | 'custom';

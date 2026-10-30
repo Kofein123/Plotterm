@@ -10,9 +10,10 @@
     "watch": "tsc -p tsconfig.json --watch",
     "start": "node scripts/serve.mjs 8080 --open",
     "serve": "node scripts/serve.mjs 8080",
-    "test": "node --test tests/core.test.ts tests/machine.test.ts",
+    "test": "node --test tests/core.test.ts tests/machine.test.ts tests/quality.test.ts",
     "fonts": "node scripts/build-fonts.mjs",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "sample": "node scripts/sample.ts"
   },
   "devDependencies": {
     "typescript": "^6.0.3"

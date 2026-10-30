@@ -45,6 +45,7 @@ export function layoutText(inp) {
     const lastVariant = new Map();
     const slantK = Math.tan((typo.slant * Math.PI) / 180);
     const cursive = typo.cursive !== false;
+    const trace = inp.trace ? { glyphs: [], runs: [] } : undefined;
     const charWidth = (it) => {
         const g = resolveGlyph(font, it.ch);
         if (g.missing)
@@ -225,12 +226,18 @@ export function layoutText(inp) {
             ulStart = null;
         };
         words.forEach((w, wi) => {
+            // связное письмо: копим один непрерывный штрих на слово
             let run = [];
+            let joints = [];
             let prev = null;
             const flushRun = () => {
-                if (run.length >= 4)
+                if (run.length >= 4) {
                     pg.strokes.push({ pts: run, line: lineNo });
+                    if (trace && joints.length)
+                        trace.runs.push({ page: pg.index, pts: run, joints });
+                }
                 run = [];
+                joints = [];
                 prev = null;
             };
             for (const c of w) {
@@ -239,10 +246,15 @@ export function layoutText(inp) {
                 if (!c.item.underline)
                     flushUnderline(x);
                 const out = renderChar(c, x, baseline, drift, r);
+                if (trace && out.strokes.length)
+                    trace.glyphs.push({ ch: c.item.ch, page: pg.index, strokes: out.strokes });
                 const joinable = cursive && out.aIn !== null && out.aOut !== null && !c.item.script;
                 if (joinable) {
-                    if (prev !== null && run.length)
+                    if (prev !== null && run.length) {
+                        joints.push(run.length / 2 - 1);
                         run.push(...connector(prev, out.aIn, prev.high));
+                        joints.push(run.length / 2);
+                    }
                     run.push(...out.strokes[0]);
                     for (let i = 1; i < out.strokes.length; i++)
                         pg.strokes.push({ pts: out.strokes[i], line: lineNo });
@@ -316,7 +328,7 @@ export function layoutText(inp) {
         }
         return { strokes, aIn, aOut };
     }
-    return { pages, missingChars: [...missing], chars: charCount };
+    return { pages, missingChars: [...missing], chars: charCount, trace };
 }
 /** Габариты набора штрихов. */
 export function strokesBounds(strokes) {
