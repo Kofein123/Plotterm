@@ -1,11 +1,13 @@
 // Действия: подключение, калибровка, ручное управление, печать, тесты.
-import { app } from './state.ts';
+import { app, gcodePlan } from './state.ts';
 import { signal, effect, createRoot } from '../ui/reactive.ts';
 import { WebSerialTransport, serialApi, SPP_UUID, type SerialPortLike } from '../grbl/webserial.ts';
 import { SimulatorTransport } from '../grbl/simulator.ts';
 import { paperToWork, workToPaper, penZ } from '../core/calibration.ts';
 import { buildPlan, fmt, type Plan } from '../core/plan.ts';
 import { layoutText } from '../core/layout.ts';
+import { backlashTestGcode } from '../core/backlash.ts';
+import { BUILTIN_FONTS } from '../fonts/fonts.ts';
 import type { Stroke } from '../core/types.ts';
 import type { JobPage } from '../grbl/job.ts';
 import { toast, beep, systemNotify, keepAwake, askNotifications, downloadText, stamp, fmtTime } from './notify.ts';
@@ -215,8 +217,9 @@ export async function jogStep(du: number, dv: number) {
       const [x, y] = paperToWork(f, tu, tv);
       await machine.jogTo(x, y, null, feed);
     } else {
-      // до калибровки: ←→ = X, ↑↓ = Y станка
-      await machine.jog(du, -dv, 0, feed);
+      // до калибровки: по осям станка, но в тех же направлениях, что и метка на превью
+      const [x, y] = paperToWork(app.frame.peek(), du, dv);
+      await machine.jog(x, y, 0, feed);
     }
   } catch (e) {
     jogError(e);
@@ -236,7 +239,8 @@ export async function jogContinuousStart(du: number, dv: number) {
       const [x, y] = paperToWork(f, tu, tv);
       await machine.jogTo(x, y, null, feed);
     } else {
-      await machine.jog(du * 300, -dv * 300, 0, feed);
+      const [x, y] = paperToWork(app.frame.peek(), du * 300, dv * 300);
+      await machine.jog(x, y, 0, feed);
     }
   } catch (e) {
     jogError(e);
@@ -373,6 +377,19 @@ export function calibGridOrigin() {
   toast('Запомнена линия сетки: строки встанут на линии клеток.', 'ok');
 }
 
+/** Стрелка едет не туда — перевернуть ось (до шага 3; шаг 3 потом сам узнаёт направление). */
+export function calibFlipAxis(axis: 0 | 1) {
+  const { corner: c, swap } = calib.peek();
+  const i = swap ? 1 - axis : axis;
+  calib.patch({ corner: i === 0 ? [-c[0], c[1]] : [c[0], -c[1]] });
+}
+
+/** Тетрадь стоит поперёк осей станка: ←→ двигают ось Y, ↑↓ — ось X. Лист после этого надо задать заново. */
+export function calibSwapAxes() {
+  const { corner: c, swap } = calib.peek();
+  calib.patch({ swap: !swap, corner: [c[1], c[0]], cornerSet: false, skewPoint: null });
+}
+
 export function calibResetAll() {
   if (!confirm('Сбросить всю калибровку?')) return;
   calib.patch({ penSet: false, zeroSet: false, cornerSet: false, skewPoint: null, gridOrigin: null, stale: false });
@@ -457,7 +474,7 @@ export async function writeSetting(key: number | string, value: string) {
 
 // --- печать ---
 
-export type PrintRange = { kind: 'all' } | { kind: 'current' } | { kind: 'from'; page: number };
+export type PrintRange = { kind: 'all' } | { kind: 'current' } | { kind: 'from'; page: number } | { kind: 'lines'; from: number; to: number };
 
 export function printBlockers(): string[] {
   const out: string[] = [];
@@ -476,11 +493,34 @@ export function buildJobPages(range: PrintRange, dry: boolean): JobPage[] {
   const n = app.pageCount.peek();
   let idx: number[] = [];
   if (range.kind === 'all') idx = [...Array(n).keys()];
-  else if (range.kind === 'current') idx = [Math.min(app.currentPage.peek(), n - 1)];
+  else if (range.kind === 'current' || range.kind === 'lines') idx = [Math.min(app.currentPage.peek(), n - 1)];
   else idx = [...Array(n).keys()].filter((i) => i >= range.page);
-  return idx
-    .map((i) => ({ plan: app.planFor(i, { dryRun: dry }), pageNo: i }))
-    .filter((p): p is JobPage => !!p.plan && p.plan.gcode.length > 0);
+  // на каждой странице сначала текст ручкой, потом рисунки карандашом (с паузой на смену и обратно)
+  const out: JobPage[] = [];
+  let pencilIn = false;
+  for (const i of idx) {
+    // отдельные строки — только текст ручкой, без рисунков
+    const lines: [number, number] | undefined = range.kind === 'lines' ? [range.from, range.to] : undefined;
+    const pen = app.planFor(i, { dryRun: dry, tool: 'pen', lines });
+    const pencil = lines ? null : app.planFor(i, { dryRun: dry, tool: 'pencil' });
+    const hasPen = !!pen && pen.strokes.length > 0;
+    const hasPencil = !!pencil && pencil.strokes.length > 0;
+    if (hasPen) {
+      const before = pencilIn
+        ? `Рисунки карандашом готовы. Верните ручку (кончик на той же высоте), положите страницу ${i + 1} и нажмите «Продолжить».`
+        : undefined;
+      out.push({ plan: pen!, pageNo: i, before });
+      pencilIn = false;
+    }
+    if (hasPencil) {
+      const before = pencilIn
+        ? `Положите страницу ${i + 1} — карандаш оставьте и нажмите «Продолжить».`
+        : `Текст страницы ${i + 1} готов. Вставьте КАРАНДАШ вместо ручки (кончик на той же высоте над бумагой) и нажмите «Продолжить» — нарисую рисунки.`;
+      out.push({ plan: pencil!, pageNo: i, before });
+      pencilIn = true;
+    }
+  }
+  return out;
 }
 
 export async function startPrint(range: PrintRange, fromStroke = 0) {
@@ -618,7 +658,7 @@ function textStrokes(text: string, u: number, v: number, size = 3): Stroke[] {
   return r.pages[0]?.strokes ?? [];
 }
 
-export type PatternKind = 'square' | 'cross' | 'grid' | 'speed' | 'paragraph';
+export type PatternKind = 'square' | 'cross' | 'grid' | 'speed' | 'paragraph' | 'backlash';
 
 export function patternPlanFor(kind: PatternKind): Plan {
   const p = app.paper.peek();
@@ -650,6 +690,16 @@ export function patternPlanFor(kind: PatternKind): Plan {
         return patternPlan([...textStrokes(String(fd), L, v + 1.5, 3), { pts: wave, line: 1 }], 'скорость ' + fd, fd);
       });
       return mergePlans(plans, 'полоса скоростей');
+    }
+    case 'backlash': {
+      // без поправки на люфт и медленно: меряем саму механику
+      const g = BUILTIN_FONTS.find((x) => x.id === 'gost-b')!;
+      const digit = (ch: string) => {
+        const gl = g.glyphs.get(ch)?.[0];
+        return gl ? gl.s.map((st) => st.map((c, i) => (i % 2 === 0 ? c / g.capHeight : (g.capHeight - c) / g.capHeight))) : [];
+      };
+      const fr = f.ready ? f : { ...f, width: W, height: H };
+      return gcodePlan(backlashTestGcode(fr, calib.peek(), app.pen.peek(), 1500, digit));
     }
     case 'paragraph': {
       const r = layoutText({ text: 'Съешь же ещё этих мягких французских булок, да выпей чаю. Пробный абзац для проверки нажима, скорости и почерка: 0123456789.', font: app.font.peek(), typo: app.typo.peek(), paper: { ...p, startLine: 1 } });

@@ -25,7 +25,7 @@ const DEFAULT_PAPER = {
 const DEFAULT_TYPO = {
     fontId: 'gost-a', xHeight: 3, slant: 12, letterSpacing: 1, wordSpacing: 1, align: 'left', hyphenate: true, indent: 10, liveliness: 3, seed: 1,
 };
-const DEFAULT_PEN = { pressure: 0.4, zDownFeed: 3000, dwellMs: 0, zDownRapid: false, hopLift: 0.8, hopDistance: 6 };
+const DEFAULT_PEN = { pressure: 0.4, zDownFeed: 3000, dwellMs: 0, zDownRapid: false, hopLift: 2, hopDistance: 6, hopV: 2 };
 const DEFAULT_SPEED = { profile: 'normal', customFeed: 4000, travelFeed: 0, joinTolerance: 0.15, simplify: 0.05, park: 'zero' };
 const DEFAULT_PREFS = {
     jogStep: 1, jogFeed: 3000, zStep: 0.5, zFeed: 600, simSpeed: 4, showTravel: false, keepSignals: false,
@@ -35,7 +35,8 @@ export const app = createRoot(() => {
     const text = persisted('text', SAMPLE_TEXT);
     const typo = persisted('typo', DEFAULT_TYPO);
     const paper = persisted('paper', DEFAULT_PAPER);
-    const pen = persisted('pen', DEFAULT_PEN);
+    // низкий подъём 0,8 мм не отрывал ручку на пружине от бумаги; 2 мм проверены на плоттере — старое значение меняем на 2
+    const pen = persisted('pen', DEFAULT_PEN, (st) => ({ ...DEFAULT_PEN, ...st, ...(st?.hopV ? {} : { hopLift: st?.hopLift === 0.8 ? 2 : st?.hopLift ?? 2, hopV: 2 }) }));
     const speed = persisted('speed', DEFAULT_SPEED);
     const calib = persisted('calib', DEFAULT_CALIBRATION);
     const prefs = persisted('prefs', DEFAULT_PREFS);
@@ -46,11 +47,13 @@ export const app = createRoot(() => {
     const fonts = computed(() => [...BUILTIN_FONTS, ...customFonts.value.map((r) => fromCustom(r))]);
     const font = computed(() => fonts.value.find((f) => f.id === typo.value.fontId) ?? BUILTIN_FONTS[0]);
     const frame = computed(() => sheetFrame(calib.value));
+    /** рисунки для разметки `![подпись](img:ID)` */
+    const images = signal({});
     // вёрстка с небольшой задержкой, чтобы не пересчитывать на каждую букву
     const layout = signal({ pages: [], missingChars: [], chars: 0 });
     let layoutTimer;
     effect(() => {
-        const inp = { text: text.value, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin };
+        const inp = { text: text.value, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin, images: images.value };
         clearTimeout(layoutTimer);
         layoutTimer = setTimeout(() => {
             layout.value = layoutText(inp);
@@ -72,6 +75,8 @@ export const app = createRoot(() => {
     });
     const currentPage = signal(0);
     const dryRun = signal(false);
+    /** печатать только строки текста с a по b текущей страницы (номера как в предпросмотре), null — всё */
+    const printLines = signal(null);
     /** страницы для печати/предпросмотра в текущем режиме */
     const pageStrokes = computed(() => {
         const src = source.value;
@@ -82,13 +87,22 @@ export const app = createRoot(() => {
         return layout.value.pages.map((p) => p.strokes);
     });
     const pageCount = computed(() => pageStrokes.value.length);
+    /** tool: только ручка («pen») или только карандаш («pencil»); без него — все штрихи (предпросмотр) */
     function planFor(pageIdx, opts = {}) {
         const src = source.peek();
         if (src.kind === 'gcode')
             return gcodePlan(src.lines);
-        const strokes = pageStrokes.peek()[pageIdx];
+        let strokes = pageStrokes.peek()[pageIdx];
         if (!strokes)
             return null;
+        if (opts.tool === 'pen')
+            strokes = strokes.filter((s) => s.tool !== 'pencil');
+        else if (opts.tool === 'pencil')
+            strokes = strokes.filter((s) => s.tool === 'pencil');
+        if (opts.lines) {
+            const keep = new Set(textLines(strokes).slice(opts.lines[0] - 1, opts.lines[1]));
+            strokes = strokes.filter((s) => keep.has(s.line));
+        }
         const p = paper.peek();
         const f = frame.peek();
         const fr = f.ready ? f : { ...f, width: p.width, height: p.height };
@@ -167,12 +181,16 @@ export const app = createRoot(() => {
     });
     return {
         text, typo, paper, pen, speed, calib, prefs, stats, profiles, source,
-        customFonts, fonts, font, frame, layout, machine, limits, currentPage, dryRun,
-        pageStrokes, pageCount, planFor, previewPlan, totalEstimate, job, isPenDown,
+        customFonts, fonts, font, frame, images, layout, machine, limits, currentPage, dryRun,
+        pageStrokes, pageCount, planFor, previewPlan, printLines, totalEstimate, job, isPenDown,
     };
 });
 /** План для чужого G-кода: штрихи только для предпросмотра. */
-function gcodePlan(lines) {
+/** Номера строк текста на странице по порядку: строка k (с 1) — это textLines(...)[k - 1]. Рисунки и таблицы (line 0) не считаются. */
+export function textLines(strokes) {
+    return [...new Set(strokes.map((s) => s.line).filter((l) => l > 0))].sort((a, b) => a - b);
+}
+export function gcodePlan(lines) {
     const { strokes, lineStroke } = parseGcodePaths(lines, (z) => app.isPenDown(z));
     const f = app.frame.peek();
     const paperStrokes = strokes.map((s) => {
@@ -194,6 +212,29 @@ function gcodePlan(lines) {
         strokes: paperStrokes, strokeLine: strokes.map(() => 0), gcode: lines, strokeStart, lineStroke,
         outOfBounds, drawLength: 0, travelLength: 0, penLifts: strokes.length, estSeconds: 0, strokeTime: strokes.map(() => 0),
     };
+}
+// --- рисунки ---
+export async function loadImages() {
+    try {
+        const rec = await idb.get('kv', 'images');
+        if (rec)
+            app.images.value = rec;
+    }
+    catch {
+        /* IndexedDB недоступна */
+    }
+}
+export async function saveImages(add, replace = false) {
+    const next = replace ? {} : { ...app.images.peek() };
+    for (const d of add)
+        next[d.id] = d;
+    app.images.value = next;
+    try {
+        await idb.set('kv', 'images', next);
+    }
+    catch {
+        /* не сохранилось — останется до перезагрузки */
+    }
 }
 // --- пользовательские шрифты ---
 export async function loadCustomFonts() {

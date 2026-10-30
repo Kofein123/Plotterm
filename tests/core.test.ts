@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { BUILTIN_FONTS } from '../src/fonts/fonts.ts';
 import { layoutText } from '../src/core/layout.ts';
 import { buildPlan, fmt, DEFAULT_LIMITS } from '../src/core/plan.ts';
+import { BACKLASH_PAIRS, backlashTestGcode } from '../src/core/backlash.ts';
 import { sheetFrame, paperToWork, workToPaper, DEFAULT_CALIBRATION } from '../src/core/calibration.ts';
 import { hyphenPoints } from '../src/core/hyphen.ts';
 import { parseMarkup } from '../src/core/markup.ts';
@@ -87,6 +88,16 @@ test('калибровка: прямое и обратное преобразо�
   assert.ok(Math.abs(f.width - 200) < 1e-6 && Math.abs(f.height - 280) < 1e-6, `${f.width} ${f.height}`);
 });
 
+test('калибровка: тетрадь поперёк осей — ширина листа идёт по Y станка', () => {
+  // X станка вдоль высоты листа (вниз по листу = −X), Y — вдоль ширины
+  const f = sheetFrame({ ...calib, swap: true, corner: [-280, 200] });
+  assert.ok(Math.abs(f.width - 200) < 1e-9 && Math.abs(f.height - 280) < 1e-9);
+  assert.deepEqual(paperToWork(f, 10, 0), [-0, 10]);
+  assert.deepEqual(paperToWork(f, 0, 10), [-10, 0]);
+  const [u, v] = workToPaper(f, ...paperToWork(f, 30, 40));
+  assert.ok(Math.abs(u - 30) < 1e-9 && Math.abs(v - 40) < 1e-9);
+});
+
 test('план: G-код поднимает и опускает ручку по Z', () => {
   const r = layoutText({ text: 'Тест', font: BUILTIN_FONTS[0], typo, paper });
   const plan = buildPlan({ strokes: r.pages[0].strokes, pageW: 210, pageH: 297, rotate180: false, frame: sheetFrame(calib), calib, pen, speed, limits: DEFAULT_LIMITS, dryRun: false, reorder: true, title: 't' });
@@ -142,4 +153,67 @@ test('низкий подъём между буквами внутри стро�
   assert.ok(fast.estSeconds < slow.estSeconds * 0.9, `${fast.estSeconds} vs ${slow.estSeconds}`);
   // после последнего штриха — полный подъём
   assert.equal(fast.gcode[fast.gcode.length - 2], 'G0 Z2');
+});
+
+/** Станок с люфтом b по осям: каретка тянется за мотором, только когда упирается (позиция в [m, m + b]). */
+function playWithBacklash(gcode: string[], b: [number, number], downZ: (z: number) => boolean): number[][] {
+  const m = [0, 0, 0], p = [0, 0];
+  const out: number[][] = [];
+  let cur: number[] | null = null;
+  for (const l of gcode) {
+    const g = /^G[01]/.test(l) || /^[XY]/.test(l);
+    if (!g) continue;
+    const t = [m[0], m[1], m[2]];
+    for (const [k, i] of [['X', 0], ['Y', 1], ['Z', 2]] as const) {
+      const r = new RegExp(k + '(-?[\\d.]+)').exec(l);
+      if (r) t[i] = parseFloat(r[1]);
+    }
+    const n = Math.max(1, Math.ceil(Math.hypot(t[0] - m[0], t[1] - m[1]) / 0.02));
+    const sx = m[0], sy = m[1];
+    for (let s = 1; s <= n; s++) {
+      const mx = sx + ((t[0] - sx) * s) / n, my = sy + ((t[1] - sy) * s) / n;
+      p[0] = Math.min(Math.max(p[0], mx), mx + b[0]);
+      p[1] = Math.min(Math.max(p[1], my), my + b[1]);
+      if (downZ(t[2]) && downZ(m[2])) cur?.push(p[0], p[1]);
+    }
+    if (downZ(t[2]) && !downZ(m[2])) { cur = [p[0], p[1]]; out.push(cur); }
+    if (!downZ(t[2])) cur = null;
+    m[0] = t[0]; m[1] = t[1]; m[2] = t[2];
+  }
+  return out;
+}
+
+test('люфт: с поправкой круг на станке с зазором 0,6 мм выходит кругом', () => {
+  const circle: number[] = [];
+  for (let a = 0; a <= 2 * Math.PI + 1e-9; a += Math.PI / 40) circle.push(50 + 4 * Math.cos(a), 50 + 4 * Math.sin(a));
+  const strokes = [{ pts: circle, line: 1 }, { pts: [70, 50, 66, 58], line: 1 }];
+  const run = (bl?: [number, number]) => {
+    const c = { ...calib, swap: true, corner: [-280, 200] as [number, number], backlash: bl };
+    const f = sheetFrame(c);
+    const plan = buildPlan({ strokes, pageW: 210, pageH: 297, rotate180: false, frame: f, calib: c, pen, speed: { ...speed, simplify: 0 }, limits: DEFAULT_LIMITS, dryRun: false, reorder: false, title: 't' });
+    const drawn = playWithBacklash(plan.gcode, [0.6, 0.6], (z) => z <= 0.01);
+    // худшее отклонение от круга радиуса 4 (в машинных координатах тот же круг)
+    let worst = 0;
+    const [cx, cy] = paperToWork(f, 50, 50);
+    for (let i = 0; i < drawn[0].length; i += 2) worst = Math.max(worst, Math.abs(Math.hypot(drawn[0][i] - cx, drawn[0][i + 1] - cy) - 4));
+    return worst;
+  };
+  const raw = run(), fixed = run([0.6, 0.6]);
+  assert.ok(raw > 0.25, `без поправки ${raw}`);
+  assert.ok(fixed < 0.08, `с поправкой ${fixed}`);
+});
+
+test('тест люфта: при зазоре 0,5 мм сходится пара №2 в обоих рядах', () => {
+  const c = { ...calib, swap: true, corner: [-280, 200] as [number, number] };
+  const f = sheetFrame(c);
+  const g = backlashTestGcode(f, c, pen, 1500, () => []);
+  const drawn = playWithBacklash(g, [0.5, 0.5], (z) => z <= 0.01).map((s) => workToPaper(f, s[0], s[1]).concat(workToPaper(f, s[s.length - 2], s[s.length - 1])));
+  // по 4 чёрточки на пару: верх, низ (поперёк), левая, правая (вдоль)
+  const best = (pick: (k: number) => number) => {
+    let bk = -1, bd = Infinity;
+    for (let k = 0; k < BACKLASH_PAIRS; k++) { const d = Math.abs(pick(k)); if (d < bd) { bd = d; bk = k; } }
+    return bk;
+  };
+  assert.equal(best((k) => drawn[k * 4][0] - drawn[k * 4 + 1][0]), 2);
+  assert.equal(best((k) => drawn[k * 4 + 2][1] - drawn[k * 4 + 3][1]), 2);
 });

@@ -1,11 +1,13 @@
 // Действия: подключение, калибровка, ручное управление, печать, тесты.
-import { app } from "./state.js";
+import { app, gcodePlan } from "./state.js";
 import { signal, effect, createRoot } from "../ui/reactive.js";
 import { WebSerialTransport, serialApi, SPP_UUID } from "../grbl/webserial.js";
 import { SimulatorTransport } from "../grbl/simulator.js";
 import { paperToWork, workToPaper, penZ } from "../core/calibration.js";
 import { buildPlan, fmt } from "../core/plan.js";
 import { layoutText } from "../core/layout.js";
+import { backlashTestGcode } from "../core/backlash.js";
+import { BUILTIN_FONTS } from "../fonts/fonts.js";
 import { toast, beep, systemNotify, keepAwake, askNotifications, downloadText, stamp, fmtTime } from "./notify.js";
 import { GrblError } from "../grbl/machine.js";
 const { machine, job, calib, prefs } = app;
@@ -220,8 +222,9 @@ export async function jogStep(du, dv) {
             await machine.jogTo(x, y, null, feed);
         }
         else {
-            // до калибровки: ←→ = X, ↑↓ = Y станка
-            await machine.jog(du, -dv, 0, feed);
+            // до калибровки: по осям станка, но в тех же направлениях, что и метка на превью
+            const [x, y] = paperToWork(app.frame.peek(), du, dv);
+            await machine.jog(x, y, 0, feed);
         }
     }
     catch (e) {
@@ -243,7 +246,8 @@ export async function jogContinuousStart(du, dv) {
             await machine.jogTo(x, y, null, feed);
         }
         else {
-            await machine.jog(du * 300, -dv * 300, 0, feed);
+            const [x, y] = paperToWork(app.frame.peek(), du * 300, dv * 300);
+            await machine.jog(x, y, 0, feed);
         }
     }
     catch (e) {
@@ -382,6 +386,17 @@ export function calibGridOrigin() {
     calib.patch({ gridOrigin: [Math.round(u * 100) / 100, Math.round(v * 100) / 100] });
     toast('Запомнена линия сетки: строки встанут на линии клеток.', 'ok');
 }
+/** Стрелка едет не туда — перевернуть ось (до шага 3; шаг 3 потом сам узнаёт направление). */
+export function calibFlipAxis(axis) {
+    const { corner: c, swap } = calib.peek();
+    const i = swap ? 1 - axis : axis;
+    calib.patch({ corner: i === 0 ? [-c[0], c[1]] : [c[0], -c[1]] });
+}
+/** Тетрадь стоит поперёк осей станка: ←→ двигают ось Y, ↑↓ — ось X. Лист после этого надо задать заново. */
+export function calibSwapAxes() {
+    const { corner: c, swap } = calib.peek();
+    calib.patch({ swap: !swap, corner: [c[1], c[0]], cornerSet: false, skewPoint: null });
+}
 export function calibResetAll() {
     if (!confirm('Сбросить всю калибровку?'))
         return;
@@ -494,13 +509,36 @@ export function buildJobPages(range, dry) {
     let idx = [];
     if (range.kind === 'all')
         idx = [...Array(n).keys()];
-    else if (range.kind === 'current')
+    else if (range.kind === 'current' || range.kind === 'lines')
         idx = [Math.min(app.currentPage.peek(), n - 1)];
     else
         idx = [...Array(n).keys()].filter((i) => i >= range.page);
-    return idx
-        .map((i) => ({ plan: app.planFor(i, { dryRun: dry }), pageNo: i }))
-        .filter((p) => !!p.plan && p.plan.gcode.length > 0);
+    // на каждой странице сначала текст ручкой, потом рисунки карандашом (с паузой на смену и обратно)
+    const out = [];
+    let pencilIn = false;
+    for (const i of idx) {
+        // отдельные строки — только текст ручкой, без рисунков
+        const lines = range.kind === 'lines' ? [range.from, range.to] : undefined;
+        const pen = app.planFor(i, { dryRun: dry, tool: 'pen', lines });
+        const pencil = lines ? null : app.planFor(i, { dryRun: dry, tool: 'pencil' });
+        const hasPen = !!pen && pen.strokes.length > 0;
+        const hasPencil = !!pencil && pencil.strokes.length > 0;
+        if (hasPen) {
+            const before = pencilIn
+                ? `Рисунки карандашом готовы. Верните ручку (кончик на той же высоте), положите страницу ${i + 1} и нажмите «Продолжить».`
+                : undefined;
+            out.push({ plan: pen, pageNo: i, before });
+            pencilIn = false;
+        }
+        if (hasPencil) {
+            const before = pencilIn
+                ? `Положите страницу ${i + 1} — карандаш оставьте и нажмите «Продолжить».`
+                : `Текст страницы ${i + 1} готов. Вставьте КАРАНДАШ вместо ручки (кончик на той же высоте над бумагой) и нажмите «Продолжить» — нарисую рисунки.`;
+            out.push({ plan: pencil, pageNo: i, before });
+            pencilIn = true;
+        }
+    }
+    return out;
 }
 export async function startPrint(range, fromStroke = 0) {
     const blockers = printBlockers();
@@ -674,6 +712,16 @@ export function patternPlanFor(kind) {
                 return patternPlan([...textStrokes(String(fd), L, v + 1.5, 3), { pts: wave, line: 1 }], 'скорость ' + fd, fd);
             });
             return mergePlans(plans, 'полоса скоростей');
+        }
+        case 'backlash': {
+            // без поправки на люфт и медленно: меряем саму механику
+            const g = BUILTIN_FONTS.find((x) => x.id === 'gost-b');
+            const digit = (ch) => {
+                const gl = g.glyphs.get(ch)?.[0];
+                return gl ? gl.s.map((st) => st.map((c, i) => (i % 2 === 0 ? c / g.capHeight : (g.capHeight - c) / g.capHeight))) : [];
+            };
+            const fr = f.ready ? f : { ...f, width: W, height: H };
+            return gcodePlan(backlashTestGcode(fr, calib.peek(), app.pen.peek(), 1500, digit));
         }
         case 'paragraph': {
             const r = layoutText({ text: 'Съешь же ещё этих мягких французских булок, да выпей чаю. Пробный абзац для проверки нажима, скорости и почерка: 0123456789.', font: app.font.peek(), typo: app.typo.peek(), paper: { ...p, startLine: 1 } });

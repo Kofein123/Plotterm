@@ -1,6 +1,6 @@
 import { h, mount } from "./ui/dom.js";
 import { App } from "./ui/App.js";
-import { loadCustomFonts } from "./app/state.js";
+import { loadCustomFonts, loadImages } from "./app/state.js";
 import { setupAutoReconnect, tryRestorePort } from "./app/actions.js";
 import * as actions from "./app/actions.js";
 import { app } from "./app/state.js";
@@ -9,6 +9,7 @@ mount(document.getElementById('app'), () => h(App, null));
 // для отладки из консоли браузера: plotterm.app, plotterm.actions
 window.plotterm = { app, actions };
 loadCustomFonts();
+loadImages();
 setupAutoReconnect();
 tryRestorePort();
 // офлайн-работа и установка как приложение
