@@ -377,9 +377,10 @@ export function readCell(g, H, cell) {
             const flat = x1 - x0 < 1.6 * RES && y1 - y0 < 0.4 * RES;
             if (flat && rows.some((y) => Math.abs((y0 + y1) / 2 - y) < 0.7 * RES))
                 return false;
-            // остаток вертикального края клетки
-            const edge = x1 < 1.2 * RES || x0 > W - 1.2 * RES;
-            if (edge && x1 - x0 < 0.5 * RES && y1 - y0 > 2 * RES)
+            // остаток вертикального края клетки; в крупной клетке выгнутый лист сдвигает край дальше и наискось
+            const zone = (cell.w > 20 ? 3 : 1.2) * RES;
+            const edge = x1 < zone || x0 > W - zone;
+            if (edge && x1 - x0 < (cell.w > 20 ? 0.8 : 0.5) * RES && y1 - y0 > 2 * RES)
                 return false;
             return true;
         });
@@ -406,7 +407,8 @@ export function readCell(g, H, cell) {
                         return true;
             return false;
         };
-        const kept = paths.filter((p) => ext(p) >= 0.7 * RES || paths.some((q) => q !== p && near(p, q)));
+        // меньше 0,4 мм — даже рядом с буквой: это огрызок стёртой печатной линии под штрихом, а не часть буквы
+        const kept = paths.filter((p) => ext(p) >= 0.7 * RES || (ext(p) >= 0.4 * RES && paths.some((q) => q !== p && near(p, q))));
         if (kept.length)
             paths = kept;
     }
