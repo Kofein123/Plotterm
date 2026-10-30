@@ -509,7 +509,7 @@ export function buildJobPages(range, dry) {
     let idx = [];
     if (range.kind === 'all')
         idx = [...Array(n).keys()];
-    else if (range.kind === 'current')
+    else if (range.kind === 'current' || range.kind === 'lines')
         idx = [Math.min(app.currentPage.peek(), n - 1)];
     else
         idx = [...Array(n).keys()].filter((i) => i >= range.page);
@@ -517,8 +517,10 @@ export function buildJobPages(range, dry) {
     const out = [];
     let pencilIn = false;
     for (const i of idx) {
-        const pen = app.planFor(i, { dryRun: dry, tool: 'pen' });
-        const pencil = app.planFor(i, { dryRun: dry, tool: 'pencil' });
+        // отдельные строки — только текст ручкой, без рисунков
+        const lines = range.kind === 'lines' ? [range.from, range.to] : undefined;
+        const pen = app.planFor(i, { dryRun: dry, tool: 'pen', lines });
+        const pencil = lines ? null : app.planFor(i, { dryRun: dry, tool: 'pencil' });
         const hasPen = !!pen && pen.strokes.length > 0;
         const hasPencil = !!pencil && pencil.strokes.length > 0;
         if (hasPen) {

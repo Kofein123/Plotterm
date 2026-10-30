@@ -75,6 +75,8 @@ export const app = createRoot(() => {
     });
     const currentPage = signal(0);
     const dryRun = signal(false);
+    /** печатать только строки текста с a по b текущей страницы (номера как в предпросмотре), null — всё */
+    const printLines = signal(null);
     /** страницы для печати/предпросмотра в текущем режиме */
     const pageStrokes = computed(() => {
         const src = source.value;
@@ -97,6 +99,10 @@ export const app = createRoot(() => {
             strokes = strokes.filter((s) => s.tool !== 'pencil');
         else if (opts.tool === 'pencil')
             strokes = strokes.filter((s) => s.tool === 'pencil');
+        if (opts.lines) {
+            const keep = new Set(textLines(strokes).slice(opts.lines[0] - 1, opts.lines[1]));
+            strokes = strokes.filter((s) => keep.has(s.line));
+        }
         const p = paper.peek();
         const f = frame.peek();
         const fr = f.ready ? f : { ...f, width: p.width, height: p.height };
@@ -176,10 +182,14 @@ export const app = createRoot(() => {
     return {
         text, typo, paper, pen, speed, calib, prefs, stats, profiles, source,
         customFonts, fonts, font, frame, images, layout, machine, limits, currentPage, dryRun,
-        pageStrokes, pageCount, planFor, previewPlan, totalEstimate, job, isPenDown,
+        pageStrokes, pageCount, planFor, previewPlan, printLines, totalEstimate, job, isPenDown,
     };
 });
 /** План для чужого G-кода: штрихи только для предпросмотра. */
+/** Номера строк текста на странице по порядку: строка k (с 1) — это textLines(...)[k - 1]. Рисунки и таблицы (line 0) не считаются. */
+export function textLines(strokes) {
+    return [...new Set(strokes.map((s) => s.line).filter((l) => l > 0))].sort((a, b) => a - b);
+}
 export function gcodePlan(lines) {
     const { strokes, lineStroke } = parseGcodePaths(lines, (z) => app.isPenDown(z));
     const f = app.frame.peek();
