@@ -129,8 +129,9 @@ export function CalibTab() {
       <Section title="Масштаб (один раз)">
         <div class="muted small">Напечатайте квадрат 100 мм, измерьте линейкой стороны и введите. Программа предложит новые $100 и $101.</div>
         <div class="grid2">
-          <Field label="Измерено по X"><NumInput value={() => measuredX.value} onChange={(v) => (measuredX.value = v)} min={50} max={150} step={0.1} unit="мм" /></Field>
-          <Field label="Измерено по Y"><NumInput value={() => measuredY.value} onChange={(v) => (measuredY.value = v)} min={50} max={150} step={0.1} unit="мм" /></Field>
+          {/* меряют по листу: при повёрнутых осях ширина листа идёт по Y станка */}
+          <Field label={() => `По ширине листа (ось ${c.value.swap ? 'Y' : 'X'} станка)`}><NumInput value={() => (c.value.swap ? measuredY : measuredX).value} onChange={(v) => ((c.peek().swap ? measuredY : measuredX).value = v)} min={50} max={150} step={0.1} unit="мм" /></Field>
+          <Field label={() => `По высоте листа (ось ${c.value.swap ? 'X' : 'Y'} станка)`}><NumInput value={() => (c.value.swap ? measuredX : measuredY).value} onChange={(v) => ((c.peek().swap ? measuredX : measuredY).value = v)} min={50} max={150} step={0.1} unit="мм" /></Field>
         </div>
         {() => {
           const m = app.machine;

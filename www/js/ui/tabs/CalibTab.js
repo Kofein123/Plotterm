@@ -91,10 +91,10 @@ export function CalibTab() {
         h(Section, { title: "\u041C\u0430\u0441\u0448\u0442\u0430\u0431 (\u043E\u0434\u0438\u043D \u0440\u0430\u0437)" },
             h("div", { class: "muted small" }, "\u041D\u0430\u043F\u0435\u0447\u0430\u0442\u0430\u0439\u0442\u0435 \u043A\u0432\u0430\u0434\u0440\u0430\u0442 100 \u043C\u043C, \u0438\u0437\u043C\u0435\u0440\u044C\u0442\u0435 \u043B\u0438\u043D\u0435\u0439\u043A\u043E\u0439 \u0441\u0442\u043E\u0440\u043E\u043D\u044B \u0438 \u0432\u0432\u0435\u0434\u0438\u0442\u0435. \u041F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0430 \u043F\u0440\u0435\u0434\u043B\u043E\u0436\u0438\u0442 \u043D\u043E\u0432\u044B\u0435 $100 \u0438 $101."),
             h("div", { class: "grid2" },
-                h(Field, { label: "\u0418\u0437\u043C\u0435\u0440\u0435\u043D\u043E \u043F\u043E X" },
-                    h(NumInput, { value: () => measuredX.value, onChange: (v) => (measuredX.value = v), min: 50, max: 150, step: 0.1, unit: "\u043C\u043C" })),
-                h(Field, { label: "\u0418\u0437\u043C\u0435\u0440\u0435\u043D\u043E \u043F\u043E Y" },
-                    h(NumInput, { value: () => measuredY.value, onChange: (v) => (measuredY.value = v), min: 50, max: 150, step: 0.1, unit: "\u043C\u043C" }))),
+                h(Field, { label: () => `По ширине листа (ось ${c.value.swap ? 'Y' : 'X'} станка)` },
+                    h(NumInput, { value: () => (c.value.swap ? measuredY : measuredX).value, onChange: (v) => ((c.peek().swap ? measuredY : measuredX).value = v), min: 50, max: 150, step: 0.1, unit: "\u043C\u043C" })),
+                h(Field, { label: () => `По высоте листа (ось ${c.value.swap ? 'X' : 'Y'} станка)` },
+                    h(NumInput, { value: () => (c.value.swap ? measuredX : measuredY).value, onChange: (v) => ((c.peek().swap ? measuredX : measuredY).value = v), min: 50, max: 150, step: 0.1, unit: "\u043C\u043C" }))),
             () => {
                 const m = app.machine;
                 const sx = m.settingNum(100, 80);

@@ -6,7 +6,7 @@ void Fragment;
 
 type Getter<T> = () => T;
 
-export function Field(props: { label: string; hint?: string | Getter<string>; children?: Child; wide?: boolean }) {
+export function Field(props: { label: string | Getter<string>; hint?: string | Getter<string>; children?: Child; wide?: boolean }) {
   return (
     <label class={'field' + (props.wide ? ' field-wide' : '')}>
       <span class="field-label">{props.label}</span>
