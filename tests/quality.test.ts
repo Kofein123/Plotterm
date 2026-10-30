@@ -54,7 +54,8 @@ test('без живости одинаковые буквы — точные к�
 });
 
 // Текущий уровень (28.10.2026): буквы различаются только поворотом/масштабом (форма ≈ 0,004),
-// у «Прописи» ~85 % стыков с изломом больше 25°. Этапы 1–2 ТЗ должны поднять первое и опустить второе.
+// у «Прописи» было ~85 % стыков с изломом больше 25°; с касательными связками (29.10.2026) — ~50 %, средний излом ~43°.
+// Этапы 1–2 ТЗ должны поднять первое и опустить второе.
 test('эталон: разнообразие букв не хуже текущего', () => {
   const r = layoutText({ text: sample('repeat.txt'), font: propis, typo, paper, trace: true });
   const q = measureQuality(r, paper, typo.xHeight);
@@ -67,8 +68,8 @@ test('эталон: стыки связного письма не хуже те�
   const r = layoutText({ text: sample('lecture-1.md'), font: propis, typo, paper, trace: true });
   const q = measureQuality(r, paper, typo.xHeight);
   assert.ok(q.joins.count > 500, 'стыков ' + q.joins.count);
-  assert.ok(q.joins.kinked <= 0.9, 'доля изломов ' + q.joins.kinked);
-  assert.ok(q.joins.mean <= 60, 'средний излом ' + q.joins.mean);
+  assert.ok(q.joins.kinked <= 0.6, 'доля изломов ' + q.joins.kinked);
+  assert.ok(q.joins.mean <= 50, 'средний излом ' + q.joins.mean);
 });
 
 test('эталон: конспект целиком в полях и без пропущенных букв', () => {

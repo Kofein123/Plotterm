@@ -5,14 +5,26 @@ export const IMPORT_CHARS = 'абвгдеёжзийклмнопрстуфхцч�
     'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ' +
     '0123456789.,:;!?-—–()[]«»"\'/\\+=%№*<>@#&_^~$';
 const FONT_PX = 180; // размер растра: x-высота получается ~80–100 px
+import { repairSfnt } from "./fontrepair.js";
 export async function importOutlineFont(file, onProgress) {
     const fam = 'plt_import_' + Date.now().toString(36);
-    const face = new FontFace(fam, await file.arrayBuffer());
+    const data = await file.arrayBuffer();
+    let face = new FontFace(fam, data);
     try {
         await face.load();
     }
     catch {
-        throw new Error('браузер не смог прочитать шрифт (нужен .ttf, .otf, .woff или .woff2)');
+        // старый шрифт с ошибками в заголовке — чиним служебные поля и пробуем ещё раз
+        const fixed = repairSfnt(data);
+        face = new FontFace(fam, fixed ?? data);
+        try {
+            if (!fixed)
+                throw new Error();
+            await face.load();
+        }
+        catch {
+            throw new Error('браузер не смог прочитать шрифт (нужен .ttf, .otf, .woff или .woff2)');
+        }
     }
     document.fonts.add(face);
     try {
@@ -374,7 +386,7 @@ function reverse(p) {
     return r;
 }
 /** Сглаживание скользящим средним (концы на месте): убирает «лесенку» пикселей. */
-function smooth(p) {
+export function smooth(p) {
     const n = p.length / 2;
     if (n < 5)
         return p;
