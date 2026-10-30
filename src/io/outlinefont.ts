@@ -18,13 +18,24 @@ export interface OutlineImportProgress {
   (done: number, total: number): void;
 }
 
+import { repairSfnt } from './fontrepair.ts';
+
 export async function importOutlineFont(file: File, onProgress?: OutlineImportProgress): Promise<CustomFontRecord> {
   const fam = 'plt_import_' + Date.now().toString(36);
-  const face = new FontFace(fam, await file.arrayBuffer());
+  const data = await file.arrayBuffer();
+  let face = new FontFace(fam, data);
   try {
     await face.load();
   } catch {
-    throw new Error('браузер не смог прочитать шрифт (нужен .ttf, .otf, .woff или .woff2)');
+    // старый шрифт с ошибками в заголовке — чиним служебные поля и пробуем ещё раз
+    const fixed = repairSfnt(data);
+    face = new FontFace(fam, fixed ?? data);
+    try {
+      if (!fixed) throw new Error();
+      await face.load();
+    } catch {
+      throw new Error('браузер не смог прочитать шрифт (нужен .ttf, .otf, .woff или .woff2)');
+    }
   }
   (document.fonts as any).add(face);
   try {
