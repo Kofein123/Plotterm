@@ -62,7 +62,7 @@ export function CalibTab() {
           <Btn small kind="primary" disabled={() => !conn()} onClick={() => calibZero()}>Здесь ноль</Btn>
         </Step>
         <Step n={3} title="Край — противоположный угол" done={() => c.value.cornerSet && !c.value.stale}>
-          <div class="muted small">Отведите каретку в правый нижний угол листа и нажмите «Здесь край». Направление осей программа поймёт сама.</div>
+          <div class="muted small">Отведите каретку в правый нижний угол листа и нажмите «Здесь край». Направление осей программа поймёт сама. Если тетрадь стоит поперёк осей станка (← → везут ручку вверх-вниз по листу), сначала нажмите «↻ Повернуть оси» под стрелками.</div>
           <Btn small kind="primary" disabled={() => !conn() || !c.value.zeroSet} onClick={() => calibCorner()}>Здесь край</Btn>
           {() => {
             const f = app.frame.value;
