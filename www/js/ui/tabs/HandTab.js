@@ -7,7 +7,7 @@ import { Btn, Field, Icon, NumInput, Note, Section, Select, Segmented } from "..
 import { downloadText, pickFile, toast } from "../../app/notify.js";
 import { importSvgFont } from "../../io/svgfont.js";
 import { importOutlineFont } from "../../io/outlinefont.js";
-import { GRID_CORNERS, templateSvg } from "../../io/template.js";
+import { gridCorners, templateSvg } from "../../io/template.js";
 import { findMarks, readTemplate } from "../../io/templateImport.js";
 import { imageFileToGray } from "../../io/image.js";
 import { addVariants } from "../../fonts/variants.js";
@@ -273,8 +273,8 @@ export async function importFont() {
         importBusy.value = null;
     }
 }
-/** какой лист-шаблон печатаем и читаем: 1 — кириллица, 2 — латиница и формулы */
-const sheetNo = signal(1);
+/** какой лист-шаблон печатаем и читаем: 3–5 — крупные (русские; қазақша, цифры, знаки; латиница), 1–2 — прежние мелкие */
+const sheetNo = signal(3);
 function downloadTemplate() {
     downloadText(`plotterm-list-shablon-${sheetNo.peek()}.svg`, templateSvg(sheetNo.peek()), 'image/svg+xml');
     toast('Распечатайте лист в масштабе 100 % («реальный размер»), заполните ручкой и сфотографируйте целиком сверху.', 'info', 9000);
@@ -330,7 +330,7 @@ async function finishCorners() {
     try {
         importBusy.value = 'Снимаю буквы…';
         await new Promise((r) => setTimeout(r, 0));
-        await applyTemplate(readTemplate(p.gray, p.pts, GRID_CORNERS, p.sheet));
+        await applyTemplate(readTemplate(p.gray, p.pts, gridCorners(p.sheet), p.sheet));
         cornerPick.value = null;
     }
     catch (e) {
@@ -419,8 +419,8 @@ export function HandTab() {
                     h(Icon, { name: "download", size: 14 }),
                     " \u042D\u043A\u0441\u043F\u043E\u0440\u0442") : null),
                 () => (editing.value ? h(Btn, { small: true, kind: "ghost", onClick: makeVariants, title: "\u041A\u0430\u0436\u0434\u0430\u044F \u0431\u0443\u043A\u0432\u0430 \u043F\u043E\u043B\u0443\u0447\u0438\u0442 4 \u0441\u043B\u0435\u0433\u043A\u0430 \u0440\u0430\u0437\u043D\u044B\u0445 \u043D\u0430\u0447\u0435\u0440\u0442\u0430\u043D\u0438\u044F \u2014 \u0436\u0438\u0432\u0435\u0435 \u0434\u043B\u044F \u0448\u0440\u0438\u0444\u0442\u043E\u0432 \u0438\u0437 .ttf" }, "\u0412\u0430\u0440\u0438\u0430\u043D\u0442\u044B \u0431\u0443\u043A\u0432 \u00D74") : null)),
-            h("div", { class: "muted small" }, "\u041F\u0440\u043E\u0449\u0435 \u0432\u0441\u0435\u0433\u043E \u2014 \u043B\u0438\u0441\u0442-\u0448\u0430\u0431\u043B\u043E\u043D: \u0440\u0430\u0441\u043F\u0435\u0447\u0430\u0442\u0430\u0442\u044C, \u043D\u0430\u043F\u0438\u0441\u0430\u0442\u044C \u043F\u043E \u0431\u0443\u043A\u0432\u0435 \u0432 \u043A\u043B\u0435\u0442\u043A\u0435 \u0441\u0432\u043E\u0435\u0439 \u0440\u0443\u0447\u043A\u043E\u0439, \u0441\u0444\u043E\u0442\u043E\u0433\u0440\u0430\u0444\u0438\u0440\u043E\u0432\u0430\u0442\u044C. \u041A\u0430\u0436\u0434\u044B\u0439 \u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D\u043D\u044B\u0439 \u043B\u0438\u0441\u0442 \u0434\u043E\u0431\u0430\u0432\u043B\u044F\u0435\u0442 \u0435\u0449\u0451 \u043E\u0434\u0438\u043D \u0432\u0430\u0440\u0438\u0430\u043D\u0442 \u043A\u0430\u0436\u0434\u043E\u0439 \u0431\u0443\u043A\u0432\u044B."),
-            h(Segmented, { small: true, value: () => sheetNo.value, onChange: (v) => { sheetNo.value = v; }, options: [{ value: 1, label: 'Лист 1 · кириллица' }, { value: 2, label: 'Лист 2 · латиница, формулы' }] }),
+            h("div", { class: "muted small" }, "\u041F\u0440\u043E\u0449\u0435 \u0432\u0441\u0435\u0433\u043E \u2014 \u043B\u0438\u0441\u0442-\u0448\u0430\u0431\u043B\u043E\u043D: \u0440\u0430\u0441\u043F\u0435\u0447\u0430\u0442\u0430\u0442\u044C, \u043D\u0430\u043F\u0438\u0441\u0430\u0442\u044C \u043F\u043E \u0431\u0443\u043A\u0432\u0435 \u0432 \u043A\u043B\u0435\u0442\u043A\u0435 \u0441\u0432\u043E\u0435\u0439 \u0440\u0443\u0447\u043A\u043E\u0439, \u0441\u0444\u043E\u0442\u043E\u0433\u0440\u0430\u0444\u0438\u0440\u043E\u0432\u0430\u0442\u044C. \u041A\u0430\u0436\u0434\u044B\u0439 \u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D\u043D\u044B\u0439 \u043B\u0438\u0441\u0442 \u0434\u043E\u0431\u0430\u0432\u043B\u044F\u0435\u0442 \u0435\u0449\u0451 \u043E\u0434\u0438\u043D \u0432\u0430\u0440\u0438\u0430\u043D\u0442 \u043A\u0430\u0436\u0434\u043E\u0439 \u0431\u0443\u043A\u0432\u044B. \u041A\u0440\u0443\u043F\u043D\u044B\u0435 \u043B\u0438\u0441\u0442\u044B \u0410, \u0411, \u0412 \u0441\u043D\u0438\u043C\u0430\u044E\u0442\u0441\u044F \u0442\u043E\u0447\u043D\u0435\u0435; \u0434\u043B\u044F \u0436\u0438\u0432\u043E\u0433\u043E \u043F\u043E\u0447\u0435\u0440\u043A\u0430 \u0437\u0430\u043F\u043E\u043B\u043D\u0438\u0442\u0435 \u043B\u0438\u0441\u0442 \u0410 2\u20134 \u0440\u0430\u0437\u0430, \u043B\u0438\u0441\u0442\u044B \u0411 \u0438 \u0412 \u2014 \u043F\u043E \u0440\u0430\u0437\u0443."),
+            h(Segmented, { small: true, value: () => sheetNo.value, onChange: (v) => { sheetNo.value = v; }, options: [{ value: 3, label: 'А · русские' }, { value: 4, label: 'Б · қазақша, цифры, знаки' }, { value: 5, label: 'В · латиница' }, { value: 1, label: 'мелкий 1' }, { value: 2, label: 'мелкий 2' }] }),
             h("div", { class: "row wrap" },
                 h(Btn, { small: true, onClick: downloadTemplate },
                     h(Icon, { name: "download", size: 14 }),
