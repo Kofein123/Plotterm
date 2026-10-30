@@ -434,7 +434,13 @@ export function layoutText(inp: LayoutInput): LayoutResult {
           }
           prevStart = run.length;
           run.push(...main);
-          for (let i = 1; i < out.strokes.length; i++) pg.strokes.push({ pts: out.strokes[i], line: lineNo });
+          for (let i = 1; i < out.strokes.length; i++) if (i !== out.oi) pg.strokes.push({ pts: out.strokes[i], line: lineNo });
+          if (out.oi) {
+            // выход из буквы — другой штрих (хвостик): он начинает следующий связный штрих
+            flushRun();
+            prevStart = 0;
+            run.push(...out.strokes[out.oi]);
+          }
           prev = out.aOut;
         } else {
           flushRun();
@@ -496,12 +502,14 @@ export function layoutText(inp: LayoutInput): LayoutResult {
     // i/o шрифта лишь говорят, что буква соединяется, и могут стоять в стороне от штриха
     let aIn: { x: number; y: number; t: [number, number] } | null = null;
     let aOut: { x: number; y: number; t: [number, number] } | null = null;
+    const oi = g.glyph.oi && g.glyph.oi < strokes.length ? g.glyph.oi : 0;
     if (g.glyph.i && g.glyph.o && strokes.length) {
       const m = strokes[0];
+      const e = strokes[oi];
       aIn = { x: m[0], y: m[1], t: [1, 0] };
-      aOut = { x: m[m.length - 2], y: m[m.length - 1], t: [1, 0] };
+      aOut = { x: e[e.length - 2], y: e[e.length - 1], t: [1, 0] };
     }
-    return { strokes, aIn, aOut };
+    return { strokes, aIn, aOut, oi };
   }
 
   return { pages, missingChars: [...missing], chars: charCount, trace };

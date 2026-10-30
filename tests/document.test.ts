@@ -1,7 +1,7 @@
 // Лекция из файла: разметка рисунков и таблиц, вёрстка, разбор PDF-строк, перевод картинки в линии.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BUILTIN_FONTS, resolveGlyph } from '../src/fonts/fonts.ts';
+import { BUILTIN_FONTS, autoJoin, mergeTouching, resolveGlyph } from '../src/fonts/fonts.ts';
 import { layoutText } from '../src/core/layout.ts';
 import { parseMarkup } from '../src/core/markup.ts';
 import { structure, imageBoxes, type TextItem } from '../src/io/document.ts';
@@ -102,4 +102,22 @@ test('картинка → линии: квадрат превращается �
   assert.ok(d.paths.length >= 1 && d.paths.length <= 4, `${d.paths.length}`);
   const xs = d.paths.flatMap((p) => p.filter((_, i) => i % 2 === 0));
   assert.ok(Math.min(...xs) < 0.13 && Math.max(...xs) > 0.87);
+});
+
+test('склейка штрихов: два отрезка, сходящихся концами, становятся одним', () => {
+  const m = mergeTouching([[0, 0, 50, 0], [50, 0, 100, 0], [0, 50, 0, 90]], 10);
+  assert.equal(m.length, 2);
+  assert.deepEqual(m[0], [0, 0, 50, 0, 100, 0]);
+});
+
+test('связка для .ttf: вход слева, выход справа внизу, хвостик выхода последним', () => {
+  // «и»: левая палка сверху вниз, правая палка снизу вверх; выход — низ правой палки
+  const g = autoJoin({ w: 60, s: [[0, 100, 0, 0], [60, 100, 60, 0]] }, 100);
+  assert.deepEqual(g.i, [0, 100]);
+  assert.deepEqual(g.o, [60, 0]);
+  assert.equal(g.oi, 1);
+  assert.deepEqual(g.s[1].slice(-2), [60, 0]);
+  // буква без подходящих концов не меняется
+  const o = { w: 60, s: [[30, 50, 30, 60]] };
+  assert.equal(autoJoin(o, 100), o);
 });

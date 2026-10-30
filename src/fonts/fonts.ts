@@ -44,11 +44,104 @@ export const BUILTIN_FONTS: StrokeFont[] = [gostAFont, gostBFont, propisFont];
 
 export const CUSTOM_X_HEIGHT = 100;
 
+/**
+ * Точки входа и выхода для буквы без них (шрифты из .ttf): вход — самый левый конец штриха внизу буквы,
+ * выход — самый правый. Буква соединяется с соседями, как в прописи, и слово пишется почти без подъёмов ручки.
+ * Если вход и выход у разных штрихов, хвостик выхода ставится последним (oi) и начинает связку к следующей букве.
+ */
+export function autoJoin(g: GlyphData, xHeight: number): GlyphData {
+  if (g.i || g.o || !g.s.length || g.w <= 0) return g;
+  // выход — внизу справа (так рука уходит к следующей букве); вход — слева, на любой высоте до x-высоты:
+  // связка поднимается к началу следующей буквы, как в прописи к «и», «м», «л»
+  const lowY = (y: number) => y <= xHeight * 0.6 && y >= -xHeight * 0.15;
+  const inY = (y: number) => y <= xHeight * 1.08 && y >= -xHeight * 0.15;
+  let entry: { si: number; end: boolean; x: number; y: number } | null = null;
+  let exit: { si: number; end: boolean; x: number; y: number } | null = null;
+  g.s.forEach((st, si) => {
+    if (st.length < 4) return;
+    for (const end of [false, true]) {
+      const x = end ? st[st.length - 2] : st[0];
+      const y = end ? st[st.length - 1] : st[1];
+      if (inY(y) && x <= g.w * 0.25 && (!entry || x < entry.x)) entry = { si, end, x, y };
+      if (lowY(y) && x >= g.w * 0.8 && (!exit || x > exit.x)) exit = { si, end, x, y };
+    }
+  });
+  const en = entry as { si: number; end: boolean; x: number; y: number } | null;
+  const ex = exit as { si: number; end: boolean; x: number; y: number } | null;
+  if (!en || !ex) return g;
+  const rev = (st: number[]) => {
+    const r: number[] = [];
+    for (let i = st.length - 2; i >= 0; i -= 2) r.push(st[i], st[i + 1]);
+    return r;
+  };
+  if (en.si === ex.si) {
+    // один штрих: вход и выход на разных его концах
+    if (en.end === ex.end) return g;
+    const st = en.end ? rev(g.s[en.si]) : g.s[en.si];
+    const rest = g.s.filter((_, i) => i !== en.si);
+    return { ...g, s: [st, ...rest], i: [en.x, en.y], o: [ex.x, ex.y] };
+  }
+  const first = en.end ? rev(g.s[en.si]) : g.s[en.si];
+  const last = ex.end ? g.s[ex.si] : rev(g.s[ex.si]);
+  const rest = g.s.filter((_, i) => i !== en.si && i !== ex.si);
+  return { ...g, s: [first, ...rest, last], i: [en.x, en.y], o: [ex.x, ex.y], oi: rest.length + 1 };
+}
+
+/**
+ * Штрихи буквы, которые сходятся концами (скелет из .ttf рвётся на развилках), склеиваем в один:
+ * чернила те же, а ручка поднимается реже. Из нескольких продолжений берём самое прямое.
+ */
+export function mergeTouching(strokes: number[][], tol: number): number[][] {
+  const out = strokes.filter((s) => s.length >= 4).map((s) => s.slice());
+  const rev = (st: number[]) => {
+    const r: number[] = [];
+    for (let i = st.length - 2; i >= 0; i -= 2) r.push(st[i], st[i + 1]);
+    return r;
+  };
+  const dir = (st: number[], atEnd: boolean): [number, number] => {
+    const n = st.length;
+    const k = Math.min(n - 2, 6);
+    const v: [number, number] = atEnd ? [st[n - 2] - st[n - 2 - k], st[n - 1] - st[n - 1 - k]] : [st[k] - st[0], st[k + 1] - st[1]];
+    const l = Math.hypot(v[0], v[1]) || 1;
+    return [v[0] / l, v[1] / l];
+  };
+  for (let guard = 0; guard < 50; guard++) {
+    let best: { i: number; j: number; ri: boolean; rj: boolean; cos: number } | null = null;
+    for (let i = 0; i < out.length; i++)
+      for (let j = 0; j < out.length; j++) {
+        if (i === j) continue;
+        for (const ri of [false, true])
+          for (const rj of [false, true]) {
+            const a = ri ? rev(out[i]) : out[i];
+            const b = rj ? rev(out[j]) : out[j];
+            if (Math.hypot(a[a.length - 2] - b[0], a[a.length - 1] - b[1]) > tol) continue;
+            const da = dir(a, true), db = dir(b, false);
+            const cos = da[0] * db[0] + da[1] * db[1];
+            if (!best || cos > best.cos) best = { i, j, ri, rj, cos };
+          }
+      }
+    if (!best) break;
+    const a = best.ri ? rev(out[best.i]) : out[best.i];
+    const b = best.rj ? rev(out[best.j]) : out[best.j];
+    out[best.i] = a.concat(b.slice(2));
+    out.splice(best.j, 1);
+  }
+  return out;
+}
+
+function prepareGlyph(g: GlyphData, ch: string): GlyphData {
+  // у снятых с шаблона букв уже есть точки входа/выхода и порядок штрихов — их не трогаем
+  if (g.i || g.o) return g;
+  const s = g.s.length > 1 ? mergeTouching(g.s, CUSTOM_X_HEIGHT * 0.1) : g.s;
+  const m = s === g.s ? g : { ...g, s };
+  return /\p{Ll}/u.test(ch) ? autoJoin(m, CUSTOM_X_HEIGHT) : m;
+}
+
 /** Пользовательский шрифт. Недостающие символы берутся из базового (масштабируются под xHeight). */
 export function fromCustom(rec: CustomFontRecord, all: StrokeFont[] = BUILTIN_FONTS): StrokeFont {
   const base = all.find((f) => f.id === rec.baseFontId) ?? BUILTIN_FONTS[0];
   const glyphs = new Map<string, GlyphData[]>();
-  for (const [ch, vs] of Object.entries(rec.glyphs)) if (vs.length) glyphs.set(ch, vs);
+  for (const [ch, vs] of Object.entries(rec.glyphs)) if (vs.length) glyphs.set(ch, vs.map((g) => prepareGlyph(g, ch)));
   // казахские буквы, ё и √ — достраиваем из своих же букв, чтобы стиль не смешивался
   const metrics = { xHeight: CUSTOM_X_HEIGHT, capHeight: CUSTOM_X_HEIGHT * (base.capHeight / base.xHeight), descender: CUSTOM_X_HEIGHT * (base.descender / base.xHeight) };
   synthesizeKazakh(glyphs, metrics);

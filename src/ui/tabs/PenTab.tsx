@@ -73,6 +73,15 @@ export function PenTab() {
       </Section>
       <Section title="Быстрее">
         <TimeBreakdown />
+        {() => {
+          const up = Math.abs(app.calib.value.upZ);
+          return app.calib.value.penSet && up > 5 ? (
+            <Note kind="warn">
+              Ручка поднимается на {up.toFixed(1)} мм — на каждый подъём уходит лишнее время. Хватает 3 мм: «Калибровка», шаг 1, поднимите
+              ручку на 3 мм над бумагой и нажмите «Ручка поднята». Страница станет писаться в 2–3 раза быстрее.
+            </Note>
+          ) : null;
+        }}
         <Field label="Низкий подъём между буквами" hint="внутри строки на короткий переезд ручка поднимается невысоко — быстрее; 0 — выкл. Ручке на пружине нужно 2 мм и больше, иначе между словами тянется линия">
           <NumInput value={bind(pen, 'hopLift').get} onChange={(v) => pen.patch({ hopLift: v === 0 ? 0 : Math.max(0.3, v) })} min={0} max={5} step={0.1} unit="мм" />
         </Field>
