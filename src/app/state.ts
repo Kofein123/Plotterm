@@ -30,7 +30,7 @@ const DEFAULT_PAPER: PaperSettings = {
 const DEFAULT_TYPO: TypographySettings = {
   fontId: 'gost-a', xHeight: 3, slant: 12, letterSpacing: 1, wordSpacing: 1, align: 'left', hyphenate: true, indent: 10, liveliness: 3, seed: 1,
 };
-const DEFAULT_PEN: PenSettings = { pressure: 0.4, zDownFeed: 3000, dwellMs: 0, zDownRapid: false, hopLift: 0, hopDistance: 6, hopV: 2 };
+const DEFAULT_PEN: PenSettings = { pressure: 0.4, zDownFeed: 3000, dwellMs: 0, zDownRapid: false, hopLift: 2, hopDistance: 6, hopV: 2 };
 const DEFAULT_SPEED: SpeedSettings = { profile: 'normal', customFeed: 4000, travelFeed: 0, joinTolerance: 0.15, simplify: 0.05, park: 'zero' };
 
 export interface Prefs {
@@ -74,8 +74,8 @@ export const app = createRoot(() => {
   const text = persisted('text', SAMPLE_TEXT);
   const typo = persisted('typo', DEFAULT_TYPO);
   const paper = persisted('paper', DEFAULT_PAPER);
-  // низкий подъём 0,8 мм по умолчанию не отрывал ручку на пружине от бумаги — старое значение выключаем
-  const pen = persisted('pen', DEFAULT_PEN, (st) => ({ ...DEFAULT_PEN, ...st, ...(st?.hopV ? {} : { hopLift: st?.hopLift === 0.8 ? 0 : st?.hopLift ?? 0, hopV: 2 }) }));
+  // низкий подъём 0,8 мм не отрывал ручку на пружине от бумаги; 2 мм проверены на плоттере — старое значение меняем на 2
+  const pen = persisted('pen', DEFAULT_PEN, (st) => ({ ...DEFAULT_PEN, ...st, ...(st?.hopV ? {} : { hopLift: st?.hopLift === 0.8 ? 2 : st?.hopLift ?? 2, hopV: 2 }) }));
   const speed = persisted('speed', DEFAULT_SPEED);
   const calib = persisted<Calibration>('calib', DEFAULT_CALIBRATION);
   const prefs = persisted('prefs', DEFAULT_PREFS);
