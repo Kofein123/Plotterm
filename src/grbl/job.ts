@@ -12,6 +12,8 @@ export interface JobPage {
   plan: Plan;
   /** номер страницы вёрстки (для подписи) */
   pageNo: number;
+  /** что сказать перед этой частью (смена ручки на карандаш и обратно); иначе — «положите следующий лист» */
+  before?: string;
 }
 
 export interface JobHooks {
@@ -171,7 +173,7 @@ export class JobRunner {
     this.currentStroke.value = plan.strokes.length;
     if (p + 1 < this.pages.length) {
       this.status.value = 'sheet';
-      this.message.value = `Страница ${this.pages[p].pageNo + 1} готова. Положите следующий лист и нажмите «Продолжить».`;
+      this.message.value = this.pages[p + 1].before ?? `Страница ${this.pages[p].pageNo + 1} готова. Положите следующий лист и нажмите «Продолжить».`;
       this.hooks.onSheet?.(this.pages[p + 1]);
     } else {
       this.status.value = 'done';

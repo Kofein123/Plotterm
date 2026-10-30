@@ -47,11 +47,13 @@ export const app = createRoot(() => {
     const fonts = computed(() => [...BUILTIN_FONTS, ...customFonts.value.map((r) => fromCustom(r))]);
     const font = computed(() => fonts.value.find((f) => f.id === typo.value.fontId) ?? BUILTIN_FONTS[0]);
     const frame = computed(() => sheetFrame(calib.value));
+    /** рисунки для разметки `![подпись](img:ID)` */
+    const images = signal({});
     // вёрстка с небольшой задержкой, чтобы не пересчитывать на каждую букву
     const layout = signal({ pages: [], missingChars: [], chars: 0 });
     let layoutTimer;
     effect(() => {
-        const inp = { text: text.value, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin };
+        const inp = { text: text.value, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin, images: images.value };
         clearTimeout(layoutTimer);
         layoutTimer = setTimeout(() => {
             layout.value = layoutText(inp);
@@ -83,13 +85,18 @@ export const app = createRoot(() => {
         return layout.value.pages.map((p) => p.strokes);
     });
     const pageCount = computed(() => pageStrokes.value.length);
+    /** tool: только ручка («pen») или только карандаш («pencil»); без него — все штрихи (предпросмотр) */
     function planFor(pageIdx, opts = {}) {
         const src = source.peek();
         if (src.kind === 'gcode')
             return gcodePlan(src.lines);
-        const strokes = pageStrokes.peek()[pageIdx];
+        let strokes = pageStrokes.peek()[pageIdx];
         if (!strokes)
             return null;
+        if (opts.tool === 'pen')
+            strokes = strokes.filter((s) => s.tool !== 'pencil');
+        else if (opts.tool === 'pencil')
+            strokes = strokes.filter((s) => s.tool === 'pencil');
         const p = paper.peek();
         const f = frame.peek();
         const fr = f.ready ? f : { ...f, width: p.width, height: p.height };
@@ -168,7 +175,7 @@ export const app = createRoot(() => {
     });
     return {
         text, typo, paper, pen, speed, calib, prefs, stats, profiles, source,
-        customFonts, fonts, font, frame, layout, machine, limits, currentPage, dryRun,
+        customFonts, fonts, font, frame, images, layout, machine, limits, currentPage, dryRun,
         pageStrokes, pageCount, planFor, previewPlan, totalEstimate, job, isPenDown,
     };
 });
@@ -195,6 +202,29 @@ function gcodePlan(lines) {
         strokes: paperStrokes, strokeLine: strokes.map(() => 0), gcode: lines, strokeStart, lineStroke,
         outOfBounds, drawLength: 0, travelLength: 0, penLifts: strokes.length, estSeconds: 0, strokeTime: strokes.map(() => 0),
     };
+}
+// --- рисунки ---
+export async function loadImages() {
+    try {
+        const rec = await idb.get('kv', 'images');
+        if (rec)
+            app.images.value = rec;
+    }
+    catch {
+        /* IndexedDB недоступна */
+    }
+}
+export async function saveImages(add, replace = false) {
+    const next = replace ? {} : { ...app.images.peek() };
+    for (const d of add)
+        next[d.id] = d;
+    app.images.value = next;
+    try {
+        await idb.set('kv', 'images', next);
+    }
+    catch {
+        /* не сохранилось — останется до перезагрузки */
+    }
 }
 // --- пользовательские шрифты ---
 export async function loadCustomFonts() {

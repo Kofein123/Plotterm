@@ -87,7 +87,16 @@ export function layoutText(inp) {
     if (!baselines.length)
         return { pages: [], missingChars: [], chars: 0 };
     const paragraphs = parseMarkup(inp.text);
-    for (const para of paragraphs) {
+    for (let pi = 0; pi < paragraphs.length; pi++) {
+        const para = paragraphs[pi];
+        if (para.kind === 'row') {
+            const rows = [];
+            while (pi < paragraphs.length && paragraphs[pi].kind === 'row')
+                rows.push(paragraphs[pi++].cells);
+            pi--;
+            placeTable(rows);
+            continue;
+        }
         if (para.kind === 'page') {
             if (page)
                 slot = baselines.length; // следующая строка начнёт новую страницу
@@ -95,6 +104,10 @@ export function layoutText(inp) {
         }
         if (para.kind === 'blank') {
             takeSlot();
+            continue;
+        }
+        if (para.kind === 'image') {
+            placeImage(para.id, para.width, para.tool);
             continue;
         }
         // слова
@@ -202,6 +215,163 @@ export function layoutText(inp) {
             }
             renderLine(pg, sl, x, gap, lb.words);
         }
+    }
+    function toWords(items) {
+        const words = [];
+        let cur = [];
+        for (const it of items) {
+            if (it.ch === ' ' && it.script === 0) {
+                if (cur.length)
+                    words.push(cur);
+                cur = [];
+            }
+            else {
+                cur.push({ item: it, w: charWidth(it) });
+                charCount++;
+            }
+        }
+        if (cur.length)
+            words.push(cur);
+        return words;
+    }
+    /** Жадная разбивка слов ячейки на строки; слишком длинное слово режется по буквам. */
+    function breakWords(words, width) {
+        const out = [];
+        let line = [];
+        let lw = 0;
+        const ww = (w) => w.reduce((a, c) => a + c.w, 0);
+        const queue = [...words];
+        while (queue.length) {
+            const w = queue.shift();
+            const need = (line.length ? spaceW : 0) + ww(w);
+            if (lw + need <= width + 1e-6) {
+                line.push(w);
+                lw += need;
+                continue;
+            }
+            if (line.length) {
+                out.push(line);
+                line = [];
+                lw = 0;
+                queue.unshift(w);
+                continue;
+            }
+            let acc = 0, cut = 0;
+            while (cut < w.length && acc + w[cut].w <= width)
+                acc += w[cut++].w;
+            cut = Math.max(1, cut);
+            out.push([w.slice(0, cut)]);
+            if (cut < w.length)
+                queue.unshift(w.slice(cut));
+        }
+        if (line.length)
+            out.push(line);
+        return out.length ? out : [[]];
+    }
+    /** Линия от руки: чуть неровная, как по линейке без линейки. */
+    function handLine(pg, x0, y0, x1, y1) {
+        const len = Math.hypot(x1 - x0, y1 - y0);
+        const n = Math.max(2, Math.ceil(len / 6));
+        const wob = 0.12 * live;
+        const ph = r.next() * Math.PI * 2;
+        const pts = [];
+        for (let i = 0; i <= n; i++) {
+            const t = i / n;
+            const off = wob * Math.sin(t * Math.PI * 2 * Math.max(1, len / 60) + ph) * Math.sin(t * Math.PI);
+            pts.push(x0 + (x1 - x0) * t - ((y1 - y0) / (len || 1)) * off, y0 + (y1 - y0) * t + ((x1 - x0) / (len || 1)) * off);
+        }
+        pg.strokes.push({ pts, line: 0 });
+    }
+    /** Таблица на всю ширину строки: рамка от руки, текст в ячейках переносится, ряды не разрываются между страницами. */
+    function placeTable(rows) {
+        const step = baselines.length > 1 ? baselines[1] - baselines[0] : Math.max(capMm * 2, 5);
+        const nCol = Math.max(...rows.map((r) => r.length));
+        const cellWords = rows.map((r) => Array.from({ length: nCol }, (_, j) => toWords(r[j] ?? [])));
+        const pad = Math.max(1, typo.xHeight * 0.5);
+        const m0 = marginsFor(page ? page.index : 0);
+        const full = m0.right - m0.left;
+        // ширина колонки — по самому длинному тексту, но узкие не меньше 12 % и широкие делят остаток
+        const nat = Array.from({ length: nCol }, (_, j) => Math.max(...cellWords.map((cw) => cw[j].reduce((a, w) => a + w.reduce((b, c) => b + c.w, 0), 0) + spaceW * Math.max(0, cw[j].length - 1))) + pad * 2);
+        // колонка не уже самого длинного слова в ней — иначе слова рвутся по буквам
+        const longest = Array.from({ length: nCol }, (_, j) => Math.max(0, ...cellWords.flatMap((cw) => cw[j].map((w) => w.reduce((b, c) => b + c.w, 0)))));
+        const minW = longest.map((l) => Math.min(full * 0.45, Math.max(full * 0.12, l + pad * 2)));
+        let widths = nat.map((w, j) => Math.max(minW[j], w));
+        const sum = widths.reduce((a, b) => a + b, 0);
+        if (sum > full) {
+            // ужимаем только широкие колонки
+            // ужимаем до длинного слова: сначала самые широкие колонки, пропорционально запасу
+            const slack = widths.map((w, j) => w - minW[j]);
+            const totalSlack = slack.reduce((a, b) => a + b, 0);
+            const over = sum - full;
+            widths = widths.map((w, j) => (totalSlack > 0 ? w - (over * slack[j]) / totalSlack : (w * full) / sum));
+        }
+        else
+            widths = widths.map((w) => (w * full) / sum);
+        const top = (sl) => baselines[sl] - step * 0.72;
+        let first = true;
+        for (const cw of cellWords) {
+            const lines = cw.map((words, j) => breakWords(words, widths[j] - pad * 2));
+            const need = Math.max(1, ...lines.map((l) => l.length));
+            if (!page || slot + need > baselines.length) {
+                newPage();
+                first = true;
+            }
+            const pg = page;
+            const m = marginsFor(pg.index);
+            const y0 = top(slot);
+            const y1 = top(slot) + need * step;
+            if (first)
+                handLine(pg, m.left, y0, m.left + full, y0);
+            first = false;
+            let x = m.left;
+            for (let j = 0; j < nCol; j++) {
+                lines[j].forEach((ln, k) => { if (ln.length)
+                    renderLine(pg, slot + k, x + pad, spaceW, ln); });
+                x += widths[j];
+            }
+            handLine(pg, m.left, y1, m.left + full, y1);
+            x = m.left;
+            for (let j = 0; j <= nCol; j++) {
+                handLine(pg, x, y0, x, y1);
+                x += widths[j] ?? 0;
+            }
+            slot += need;
+            pg.usedLines = slot;
+        }
+    }
+    /** Рисунок на всю ширину строки: занимает целые строки страницы, не помещается — переходит на следующую. */
+    function placeImage(id, frac, tool) {
+        const d = inp.images?.[id];
+        const aspect = d?.aspect ?? 0.6;
+        const step = baselines.length > 1 ? baselines[1] - baselines[0] : Math.max(capMm * 2, 5);
+        const m0 = marginsFor(page ? page.index : 0);
+        const full = m0.right - m0.left;
+        let w = full * frac;
+        let h = w * aspect;
+        const pageH = step * baselines.length;
+        if (h > pageH * 0.85) {
+            h = pageH * 0.85;
+            w = h / aspect;
+        }
+        const lines = Math.max(1, Math.ceil(h / step + 0.4));
+        if (!page || slot + lines > baselines.length)
+            newPage();
+        const pg = page;
+        const m = marginsFor(pg.index);
+        const top = baselines[slot] - step + (lines * step - h) / 2;
+        const left = m.left + (m.right - m.left - w) / 2;
+        if (d && tool !== 'space') {
+            for (const p of d.paths) {
+                const pts = new Array(p.length);
+                for (let i = 0; i < p.length; i += 2) {
+                    pts[i] = left + p[i] * w;
+                    pts[i + 1] = top + p[i + 1] * w;
+                }
+                pg.strokes.push(tool === 'pencil' ? { pts, line: 0, tool: 'pencil' } : { pts, line: 0 });
+            }
+        }
+        slot += lines;
+        pg.usedLines = slot;
     }
     function renderLine(pg, sl, x0, gap, words) {
         const baseline = baselines[sl];

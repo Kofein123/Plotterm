@@ -5,6 +5,8 @@
 export interface Stroke {
   pts: number[];
   line: number;
+  /** чем рисовать: по умолчанию ручкой; «pencil» — после текста страницы, с паузой на смену */
+  tool?: 'pencil';
 }
 
 export interface PageLayout {
