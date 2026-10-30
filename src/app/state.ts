@@ -10,6 +10,13 @@ import { Machine } from '../grbl/machine.ts';
 import { JobRunner } from '../grbl/job.ts';
 import { idb } from '../store/db.ts';
 import { parseGcodePaths } from '../io/importers.ts';
+import type { VectorDrawing } from '../io/vectorize.ts';
+
+/** Рисунок из импортированного документа или загруженный вручную: линии + имя для списка. */
+export interface DrawingRecord extends VectorDrawing {
+  id: string;
+  name: string;
+}
 
 export const SAMPLE_TEXT = `# Конспект
 Это пример. Вставьте сюда свой текст — он будет написан ручкой на листе.
@@ -87,12 +94,14 @@ export const app = createRoot(() => {
   const font = computed<StrokeFont>(() => fonts.value.find((f) => f.id === typo.value.fontId) ?? BUILTIN_FONTS[0]);
 
   const frame = computed(() => sheetFrame(calib.value));
+  /** рисунки для разметки `![подпись](img:ID)` */
+  const images = signal<Record<string, DrawingRecord>>({});
 
   // вёрстка с небольшой задержкой, чтобы не пересчитывать на каждую букву
   const layout = signal<LayoutResult>({ pages: [], missingChars: [], chars: 0 });
   let layoutTimer: ReturnType<typeof setTimeout> | undefined;
   effect(() => {
-    const inp = { text: text.value, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin };
+    const inp = { text: text.value, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin, images: images.value };
     clearTimeout(layoutTimer);
     layoutTimer = setTimeout(() => {
       layout.value = layoutText(inp);
@@ -126,11 +135,14 @@ export const app = createRoot(() => {
   });
   const pageCount = computed(() => pageStrokes.value.length);
 
-  function planFor(pageIdx: number, opts: { dryRun?: boolean } = {}): Plan | null {
+  /** tool: только ручка («pen») или только карандаш («pencil»); без него — все штрихи (предпросмотр) */
+  function planFor(pageIdx: number, opts: { dryRun?: boolean; tool?: 'pen' | 'pencil' } = {}): Plan | null {
     const src = source.peek();
     if (src.kind === 'gcode') return gcodePlan(src.lines);
-    const strokes = pageStrokes.peek()[pageIdx];
+    let strokes = pageStrokes.peek()[pageIdx];
     if (!strokes) return null;
+    if (opts.tool === 'pen') strokes = strokes.filter((s) => s.tool !== 'pencil');
+    else if (opts.tool === 'pencil') strokes = strokes.filter((s) => s.tool === 'pencil');
     const p = paper.peek();
     const f = frame.peek();
     const fr = f.ready ? f : { ...f, width: p.width, height: p.height };
@@ -200,7 +212,7 @@ export const app = createRoot(() => {
 
   return {
     text, typo, paper, pen, speed, calib, prefs, stats, profiles, source,
-    customFonts, fonts, font, frame, layout, machine, limits, currentPage, dryRun,
+    customFonts, fonts, font, frame, images, layout, machine, limits, currentPage, dryRun,
     pageStrokes, pageCount, planFor, previewPlan, totalEstimate, job, isPenDown,
   };
 });
@@ -224,6 +236,27 @@ function gcodePlan(lines: string[]): Plan {
     strokes: paperStrokes, strokeLine: strokes.map(() => 0), gcode: lines, strokeStart, lineStroke,
     outOfBounds, drawLength: 0, travelLength: 0, penLifts: strokes.length, estSeconds: 0, strokeTime: strokes.map(() => 0),
   };
+}
+
+// --- рисунки ---
+export async function loadImages() {
+  try {
+    const rec = await idb.get<Record<string, DrawingRecord>>('kv', 'images');
+    if (rec) app.images.value = rec;
+  } catch {
+    /* IndexedDB недоступна */
+  }
+}
+
+export async function saveImages(add: DrawingRecord[], replace = false) {
+  const next = replace ? {} as Record<string, DrawingRecord> : { ...app.images.peek() };
+  for (const d of add) next[d.id] = d;
+  app.images.value = next;
+  try {
+    await idb.set('kv', 'images', next);
+  } catch {
+    /* не сохранилось — останется до перезагрузки */
+  }
 }
 
 // --- пользовательские шрифты ---

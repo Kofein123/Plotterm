@@ -511,9 +511,30 @@ export function buildJobPages(range, dry) {
         idx = [Math.min(app.currentPage.peek(), n - 1)];
     else
         idx = [...Array(n).keys()].filter((i) => i >= range.page);
-    return idx
-        .map((i) => ({ plan: app.planFor(i, { dryRun: dry }), pageNo: i }))
-        .filter((p) => !!p.plan && p.plan.gcode.length > 0);
+    // на каждой странице сначала текст ручкой, потом рисунки карандашом (с паузой на смену и обратно)
+    const out = [];
+    let pencilIn = false;
+    for (const i of idx) {
+        const pen = app.planFor(i, { dryRun: dry, tool: 'pen' });
+        const pencil = app.planFor(i, { dryRun: dry, tool: 'pencil' });
+        const hasPen = !!pen && pen.strokes.length > 0;
+        const hasPencil = !!pencil && pencil.strokes.length > 0;
+        if (hasPen) {
+            const before = pencilIn
+                ? `Рисунки карандашом готовы. Верните ручку (кончик на той же высоте), положите страницу ${i + 1} и нажмите «Продолжить».`
+                : undefined;
+            out.push({ plan: pen, pageNo: i, before });
+            pencilIn = false;
+        }
+        if (hasPencil) {
+            const before = pencilIn
+                ? `Положите страницу ${i + 1} — карандаш оставьте и нажмите «Продолжить».`
+                : `Текст страницы ${i + 1} готов. Вставьте КАРАНДАШ вместо ручки (кончик на той же высоте над бумагой) и нажмите «Продолжить» — нарисую рисунки.`;
+            out.push({ plan: pencil, pageNo: i, before });
+            pencilIn = true;
+        }
+    }
+    return out;
 }
 export async function startPrint(range, fromStroke = 0) {
     const blockers = printBlockers();

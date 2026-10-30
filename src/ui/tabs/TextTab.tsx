@@ -1,19 +1,58 @@
 import { h } from '../dom.ts';
-import { app, SAMPLE_TEXT, type SubjectProfile } from '../../app/state.ts';
+import { app, SAMPLE_TEXT, saveImages, type SubjectProfile } from '../../app/state.ts';
+import { docxToDocument, missingImages, pdfToDocument } from '../../io/document.ts';
+import { vectorize } from '../../io/vectorize.ts';
+import { imageFileToGray } from '../../io/image.ts';
 import { Btn, Icon, Note, Section } from '../components.tsx';
 import { readTextFile, svgToStrokes } from '../../io/importers.ts';
 import { pickFile, toast, fmtTime } from '../../app/notify.ts';
 
 async function importText() {
-  const f = await pickFile('.txt,.md,.markdown,.docx,text/plain');
+  const f = await pickFile('.pdf,.docx,.txt,.md,.markdown,text/plain,application/pdf');
   if (!f) return;
+  const name = f.name.toLowerCase();
   try {
+    if (name.endsWith('.pdf') || name.endsWith('.docx')) {
+      toast(`Читаю «${f.name}»: текст и рисунки…`, 'info', 4000);
+      const buf = await f.arrayBuffer();
+      const d = name.endsWith('.pdf') ? await pdfToDocument(buf, (m) => toast(m, 'info', 1500)) : await docxToDocument(buf);
+      await saveImages(d.images.map((im) => ({ ...im, id: im.id })));
+      app.text.value = d.text;
+      app.source.value = { kind: 'text' };
+      app.currentPage.value = 0;
+      const marked = [...d.text.matchAll(/\(img:[\w-]+ (место|карандаш)\)/g)];
+      toast(
+        `Загружено: ${f.name} · рисунков ${d.images.length}` +
+          (marked.length ? ` (из них ${marked.filter((m) => m[1] === 'место').length} — место под распечатку, ${marked.filter((m) => m[1] === 'карандаш').length} — карандашом)` : '') +
+          '. Проверьте текст и страницы в предпросмотре.',
+        'ok',
+        8000,
+      );
+      return;
+    }
     const t = await readTextFile(f);
     app.text.value = t;
     app.source.value = { kind: 'text' };
     toast(`Загружено: ${f.name}`, 'ok');
   } catch (e: any) {
     toast('Не удалось прочитать файл: ' + (e?.message ?? e), 'err');
+  }
+}
+
+/** Картинка (фото схемы, скриншот) → линии; в текст вставляется строка-рисунок. */
+async function insertPicture(insert: (s: string) => void) {
+  const f = await pickFile('image/*');
+  if (!f) return;
+  try {
+    const g = await imageFileToGray(f, 1800);
+    const d = vectorize(g);
+    if (!d.paths.length) return toast('На картинке не нашлось линий.', 'warn');
+    const id = 'r' + Date.now().toString(36);
+    await saveImages([{ id, name: f.name, ...d }]);
+    insert(`\n![](img:${id} 70%)\n`);
+    toast(`Рисунок «${f.name}»: ${d.paths.length} линий. В строке можно поменять ширину (70 %) и добавить «карандаш» или «место».`, 'ok', 8000);
+  } catch (e: any) {
+    toast('Не удалось открыть картинку: ' + (e?.message ?? e), 'err');
   }
 }
 
@@ -84,7 +123,7 @@ export function TextTab() {
         title="Текст конспекта"
         aside={
           <span class="row">
-            <Btn small kind="ghost" onClick={() => importText()} title=".txt, .md, .docx"><Icon name="upload" size={14} /> Файл</Btn>
+            <Btn small kind="ghost" onClick={() => importText()} title="PDF, Word (.docx), .txt, .md — вместе с рисунками"><Icon name="upload" size={14} /> Файл лекции</Btn>
           </span>
         }
       >
@@ -107,6 +146,7 @@ export function TextTab() {
           <button class="chip" title="Корень" onClick={() => insert('√')}>√</button>
           <button class="chip" title="Подчеркнуть" onClick={() => insert('____')}>подчеркнуть</button>
           <button class="chip" title="Новая страница" onClick={() => insert('\n===\n')}>новая стр.</button>
+          <button class="chip" title="Рисунок из фото или картинки: плоттер нарисует его линиями" onClick={() => insertPicture(insert)}>+ рисунок</button>
         </div>
         <div class="text-stats muted">
           {() => {
@@ -114,6 +154,14 @@ export function TextTab() {
             const n = l.pages.length;
             return `${l.chars} знаков · ${n} стр. · ≈ ${fmtTime(app.totalEstimate.value)}`;
           }}
+        </div>
+        {() => {
+          const miss = missingImages(app.text.value, app.images.value);
+          return miss.length ? <Note kind="warn">Нет рисунков: {miss.join(', ')} — на их месте останется пустое место. Загрузите файл лекции заново на этом устройстве.</Note> : null;
+        }}
+        <div class="muted small">
+          Рисунок — строка <code>![подпись](img:…)</code>: добавьте «50%», чтобы сделать уже, «карандаш» — нарисовать карандашом после текста
+          страницы (плоттер попросит сменить ручку), «место» — оставить место под распечатку.
         </div>
         {() =>
           app.layout.value.missingChars.length ? (

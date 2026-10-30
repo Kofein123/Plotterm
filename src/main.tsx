@@ -1,6 +1,6 @@
 import { h, mount } from './ui/dom.ts';
 import { App } from './ui/App.tsx';
-import { loadCustomFonts } from './app/state.ts';
+import { loadCustomFonts, loadImages } from './app/state.ts';
 import { setupAutoReconnect, tryRestorePort } from './app/actions.ts';
 import * as actions from './app/actions.ts';
 import { app } from './app/state.ts';
@@ -13,6 +13,7 @@ mount(document.getElementById('app')!, () => <App />);
 (window as any).plotterm = { app, actions };
 
 loadCustomFonts();
+loadImages();
 setupAutoReconnect();
 tryRestorePort();
 
