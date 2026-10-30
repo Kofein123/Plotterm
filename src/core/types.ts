@@ -127,6 +127,8 @@ export interface PenSettings {
   hopLift: number;
   /** до какой длины переезд считается коротким, мм */
   hopDistance: number;
+  /** версия настроек низкого подъёма (2 — по умолчанию 2 мм) */
+  hopV?: number;
 }
 
 export interface SpeedSettings {
