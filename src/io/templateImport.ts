@@ -331,9 +331,10 @@ export function readCell(g: Gray, H: Homography, cell: TemplateCell): GlyphData 
       for (let i = 0; i < p.length; i += 2) { x0 = Math.min(x0, p[i]); x1 = Math.max(x1, p[i]); y0 = Math.min(y0, p[i + 1]); y1 = Math.max(y1, p[i + 1]); }
       const flat = x1 - x0 < 1.6 * RES && y1 - y0 < 0.4 * RES;
       if (flat && rows.some((y) => Math.abs((y0 + y1) / 2 - y) < 0.7 * RES)) return false;
-      // остаток вертикального края клетки
-      const edge = x1 < 1.2 * RES || x0 > W - 1.2 * RES;
-      if (edge && x1 - x0 < 0.5 * RES && y1 - y0 > 2 * RES) return false;
+      // остаток вертикального края клетки; в крупной клетке выгнутый лист сдвигает край дальше и наискось
+      const zone = (cell.w > 20 ? 3 : 1.2) * RES;
+      const edge = x1 < zone || x0 > W - zone;
+      if (edge && x1 - x0 < (cell.w > 20 ? 0.8 : 0.5) * RES && y1 - y0 > 2 * RES) return false;
       return true;
     });
   }
@@ -351,7 +352,8 @@ export function readCell(g: Gray, H: Homography, cell: TemplateCell): GlyphData 
       for (let i = 0; i < p.length; i += 2) for (let j = 0; j < q.length; j += 2) if (Math.hypot(p[i] - q[j], p[i + 1] - q[j + 1]) < 0.6 * RES) return true;
       return false;
     };
-    const kept = paths.filter((p) => ext(p) >= 0.7 * RES || paths.some((q) => q !== p && near(p, q)));
+    // меньше 0,4 мм — даже рядом с буквой: это огрызок стёртой печатной линии под штрихом, а не часть буквы
+    const kept = paths.filter((p) => ext(p) >= 0.7 * RES || (ext(p) >= 0.4 * RES && paths.some((q) => q !== p && near(p, q))));
     if (kept.length) paths = kept;
   }
   // точки над ё, й, і стоят выше пунктира; «точка» прямо на линии у буквы — это кусок штриха печатной линии
