@@ -9,14 +9,19 @@ import { Btn, Icon, Segmented, Toggle, Slider } from './components.tsx';
 import { Jog } from './Jog.tsx';
 import { fmtTime } from '../app/notify.ts';
 
-const range = signal<'all' | 'current' | 'from'>('all');
+const range = signal<'all' | 'current' | 'from' | 'lines'>('all');
 const fromPage = signal(1);
+const lineFrom = signal(1);
+const lineTo = signal(1);
+// номера строк показываем в предпросмотре, пока выбран режим «Строки»
+const syncLines = () => (app.printLines.value = range.peek() === 'lines' ? [lineFrom.peek(), Math.max(lineFrom.peek(), lineTo.peek())] : null);
 const ovTarget = signal(100);
 let ovTimer: ReturnType<typeof setTimeout> | undefined;
 
 function rangeValue(): PrintRange {
   const r = range.peek();
   if (r === 'from') return { kind: 'from', page: Math.max(0, fromPage.peek() - 1) };
+  if (r === 'lines') return { kind: 'lines', from: lineFrom.peek(), to: Math.max(lineFrom.peek(), lineTo.peek()) };
   return { kind: r };
 }
 
@@ -96,12 +101,19 @@ function PrintBlock() {
         <Segmented
           small
           value={() => range.value}
-          onChange={(v) => (range.value = v)}
-          options={[{ value: 'all', label: 'Все' }, { value: 'current', label: 'Текущую' }, { value: 'from', label: 'С стр.' }]}
+          onChange={(v) => { range.value = v; syncLines(); }}
+          options={[{ value: 'all', label: 'Все' }, { value: 'current', label: 'Текущую' }, { value: 'from', label: 'С стр.' }, { value: 'lines', label: 'Строки' }]}
         />
         {() =>
           range.value === 'from' ? (
             <input class="mini-num" type="number" min="1" value={() => String(fromPage.value)} onChange={(e: Event) => (fromPage.value = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1))} />
+          ) : range.value === 'lines' ? (
+            <span class="row" title="Номера строк видны слева на листе. Печатается только текст этих строк текущей страницы, на своём месте">
+              <span class="small">с</span>
+              <input class="mini-num" type="number" min="1" value={() => String(lineFrom.value)} onChange={(e: Event) => { lineFrom.value = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); syncLines(); }} />
+              <span class="small">по</span>
+              <input class="mini-num" type="number" min="1" value={() => String(lineTo.value)} onChange={(e: Event) => { lineTo.value = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); syncLines(); }} />
+            </span>
           ) : null
         }
       </div>

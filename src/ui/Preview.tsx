@@ -1,7 +1,7 @@
 // Предпросмотр листа: шаблон бумаги, штрихи, порядок печати, положение пера, границы.
 import { h } from './dom.ts';
 import { signal, effect, onCleanup } from './reactive.ts';
-import { app } from '../app/state.ts';
+import { app, textLines } from '../app/state.ts';
 import { simInk, printFromStroke } from '../app/actions.ts';
 import { workToPaper } from '../core/calibration.ts';
 import { polyDist2 } from '../core/geometry.ts';
@@ -154,8 +154,33 @@ export function Preview() {
         ctx.stroke();
         ctx.setLineDash([]);
       }
+      // режим «Строки»: номера строк слева, невыбранные строки бледные
+      const pl = jobActive ? null : app.printLines.peek();
+      const order = textLines(plan.strokeLine.map((line) => ({ line })));
+      const chosen = pl ? new Set(order.slice(pl[0] - 1, pl[1])) : null;
+      const off = (i: number) => !!chosen && !chosen.has(plan.strokeLine[i]);
+      if (pl) {
+        const ys = new Map<number, [number, number]>();
+        plan.strokes.forEach((st, i) => {
+          const l = plan.strokeLine[i];
+          if (l <= 0) return;
+          const r = ys.get(l) ?? [Infinity, -Infinity];
+          for (let j = 1; j < st.length; j += 2) { r[0] = Math.min(r[0], st[j]); r[1] = Math.max(r[1], st[j]); }
+          ys.set(l, r);
+        });
+        ctx.font = `${Math.max(2.6, px * 11)}px sans-serif`;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        order.forEach((l, k) => {
+          const r = ys.get(l);
+          if (!r) return;
+          ctx.fillStyle = chosen!.has(l) ? colors.current : colors.travel;
+          ctx.fillText(String(k + 1), Math.max(4, app.paper.peek().marginLeft - 1.5), (r[0] + r[1]) / 2);
+        });
+      }
       const groups: [string, (i: number) => boolean][] = [
-        [jobActive ? colors.pending : colors.ink, (i) => !bad.has(i) && (!jobActive || i > cur)],
+        [colors.travel, (i) => off(i)],
+        [jobActive ? colors.pending : colors.ink, (i) => !off(i) && !bad.has(i) && (!jobActive || i > cur)],
         [colors.done, (i) => !bad.has(i) && jobActive && i < cur],
         [colors.current, (i) => !bad.has(i) && jobActive && i === cur],
         [colors.bad, (i) => bad.has(i)],
@@ -243,6 +268,7 @@ export function Preview() {
   // перерисовка при изменениях
   effect(() => {
     shownPlan();
+    app.printLines.value;
     app.job.currentStroke.value;
     app.job.resumePoint.value;
     app.machine.wpos.value;

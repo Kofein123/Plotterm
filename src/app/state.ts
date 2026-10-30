@@ -126,6 +126,8 @@ export const app = createRoot(() => {
 
   const currentPage = signal(0);
   const dryRun = signal(false);
+  /** печатать только строки текста с a по b текущей страницы (номера как в предпросмотре), null — всё */
+  const printLines = signal<[number, number] | null>(null);
 
   /** страницы для печати/предпросмотра в текущем режиме */
   const pageStrokes = computed<Stroke[][]>(() => {
@@ -137,13 +139,17 @@ export const app = createRoot(() => {
   const pageCount = computed(() => pageStrokes.value.length);
 
   /** tool: только ручка («pen») или только карандаш («pencil»); без него — все штрихи (предпросмотр) */
-  function planFor(pageIdx: number, opts: { dryRun?: boolean; tool?: 'pen' | 'pencil' } = {}): Plan | null {
+  function planFor(pageIdx: number, opts: { dryRun?: boolean; tool?: 'pen' | 'pencil'; lines?: [number, number] } = {}): Plan | null {
     const src = source.peek();
     if (src.kind === 'gcode') return gcodePlan(src.lines);
     let strokes = pageStrokes.peek()[pageIdx];
     if (!strokes) return null;
     if (opts.tool === 'pen') strokes = strokes.filter((s) => s.tool !== 'pencil');
     else if (opts.tool === 'pencil') strokes = strokes.filter((s) => s.tool === 'pencil');
+    if (opts.lines) {
+      const keep = new Set(textLines(strokes).slice(opts.lines[0] - 1, opts.lines[1]));
+      strokes = strokes.filter((s) => keep.has(s.line));
+    }
     const p = paper.peek();
     const f = frame.peek();
     const fr = f.ready ? f : { ...f, width: p.width, height: p.height };
@@ -214,12 +220,17 @@ export const app = createRoot(() => {
   return {
     text, typo, paper, pen, speed, calib, prefs, stats, profiles, source,
     customFonts, fonts, font, frame, images, layout, machine, limits, currentPage, dryRun,
-    pageStrokes, pageCount, planFor, previewPlan, totalEstimate, job, isPenDown,
+    pageStrokes, pageCount, planFor, previewPlan, printLines, totalEstimate, job, isPenDown,
   };
 });
 
 /** План для чужого G-кода: штрихи только для предпросмотра. */
-function gcodePlan(lines: string[]): Plan {
+/** Номера строк текста на странице по порядку: строка k (с 1) — это textLines(...)[k - 1]. Рисунки и таблицы (line 0) не считаются. */
+export function textLines(strokes: { line: number }[]): number[] {
+  return [...new Set(strokes.map((s) => s.line).filter((l) => l > 0))].sort((a, b) => a - b);
+}
+
+export function gcodePlan(lines: string[]): Plan {
   const { strokes, lineStroke } = parseGcodePaths(lines, (z) => app.isPenDown(z));
   const f = app.frame.peek();
   const paperStrokes = strokes.map((s) => {

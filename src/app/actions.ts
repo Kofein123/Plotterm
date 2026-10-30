@@ -1,11 +1,13 @@
 // Действия: подключение, калибровка, ручное управление, печать, тесты.
-import { app } from './state.ts';
+import { app, gcodePlan } from './state.ts';
 import { signal, effect, createRoot } from '../ui/reactive.ts';
 import { WebSerialTransport, serialApi, SPP_UUID, type SerialPortLike } from '../grbl/webserial.ts';
 import { SimulatorTransport } from '../grbl/simulator.ts';
 import { paperToWork, workToPaper, penZ } from '../core/calibration.ts';
 import { buildPlan, fmt, type Plan } from '../core/plan.ts';
 import { layoutText } from '../core/layout.ts';
+import { backlashTestGcode } from '../core/backlash.ts';
+import { BUILTIN_FONTS } from '../fonts/fonts.ts';
 import type { Stroke } from '../core/types.ts';
 import type { JobPage } from '../grbl/job.ts';
 import { toast, beep, systemNotify, keepAwake, askNotifications, downloadText, stamp, fmtTime } from './notify.ts';
@@ -472,7 +474,7 @@ export async function writeSetting(key: number | string, value: string) {
 
 // --- печать ---
 
-export type PrintRange = { kind: 'all' } | { kind: 'current' } | { kind: 'from'; page: number };
+export type PrintRange = { kind: 'all' } | { kind: 'current' } | { kind: 'from'; page: number } | { kind: 'lines'; from: number; to: number };
 
 export function printBlockers(): string[] {
   const out: string[] = [];
@@ -491,14 +493,16 @@ export function buildJobPages(range: PrintRange, dry: boolean): JobPage[] {
   const n = app.pageCount.peek();
   let idx: number[] = [];
   if (range.kind === 'all') idx = [...Array(n).keys()];
-  else if (range.kind === 'current') idx = [Math.min(app.currentPage.peek(), n - 1)];
+  else if (range.kind === 'current' || range.kind === 'lines') idx = [Math.min(app.currentPage.peek(), n - 1)];
   else idx = [...Array(n).keys()].filter((i) => i >= range.page);
   // на каждой странице сначала текст ручкой, потом рисунки карандашом (с паузой на смену и обратно)
   const out: JobPage[] = [];
   let pencilIn = false;
   for (const i of idx) {
-    const pen = app.planFor(i, { dryRun: dry, tool: 'pen' });
-    const pencil = app.planFor(i, { dryRun: dry, tool: 'pencil' });
+    // отдельные строки — только текст ручкой, без рисунков
+    const lines: [number, number] | undefined = range.kind === 'lines' ? [range.from, range.to] : undefined;
+    const pen = app.planFor(i, { dryRun: dry, tool: 'pen', lines });
+    const pencil = lines ? null : app.planFor(i, { dryRun: dry, tool: 'pencil' });
     const hasPen = !!pen && pen.strokes.length > 0;
     const hasPencil = !!pencil && pencil.strokes.length > 0;
     if (hasPen) {
@@ -654,7 +658,7 @@ function textStrokes(text: string, u: number, v: number, size = 3): Stroke[] {
   return r.pages[0]?.strokes ?? [];
 }
 
-export type PatternKind = 'square' | 'cross' | 'grid' | 'speed' | 'paragraph';
+export type PatternKind = 'square' | 'cross' | 'grid' | 'speed' | 'paragraph' | 'backlash';
 
 export function patternPlanFor(kind: PatternKind): Plan {
   const p = app.paper.peek();
@@ -686,6 +690,16 @@ export function patternPlanFor(kind: PatternKind): Plan {
         return patternPlan([...textStrokes(String(fd), L, v + 1.5, 3), { pts: wave, line: 1 }], 'скорость ' + fd, fd);
       });
       return mergePlans(plans, 'полоса скоростей');
+    }
+    case 'backlash': {
+      // без поправки на люфт и медленно: меряем саму механику
+      const g = BUILTIN_FONTS.find((x) => x.id === 'gost-b')!;
+      const digit = (ch: string) => {
+        const gl = g.glyphs.get(ch)?.[0];
+        return gl ? gl.s.map((st) => st.map((c, i) => (i % 2 === 0 ? c / g.capHeight : (g.capHeight - c) / g.capHeight))) : [];
+      };
+      const fr = f.ready ? f : { ...f, width: W, height: H };
+      return gcodePlan(backlashTestGcode(fr, calib.peek(), app.pen.peek(), 1500, digit));
     }
     case 'paragraph': {
       const r = layoutText({ text: 'Съешь же ещё этих мягких французских булок, да выпей чаю. Пробный абзац для проверки нажима, скорости и почерка: 0123456789.', font: app.font.peek(), typo: app.typo.peek(), paper: { ...p, startLine: 1 } });
