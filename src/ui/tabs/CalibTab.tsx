@@ -7,6 +7,7 @@ import {
 } from '../../app/actions.ts';
 import { Btn, Field, Icon, NumInput, Note, Section } from '../components.tsx';
 import { Jog } from '../Jog.tsx';
+import { BACKLASH_PAIRS, BACKLASH_STEP, backlashOf } from '../../core/backlash.ts';
 
 function Step(props: { n: number; title: string; done: () => boolean; children?: Child }) {
   return (
@@ -101,6 +102,28 @@ export function CalibTab() {
           <Btn small onClick={() => printPattern('speed')}>Скорости</Btn>
           <Btn small onClick={() => printPattern('paragraph')}>Пробный абзац</Btn>
         </div>
+      </Section>
+
+      <Section title="Люфт (буквы кривые, а на экране ровно)">
+        <div class="muted small">
+          Если круглые буквы выходят квадратными, наклон пропадает, а мелкие детали съедаются — у осей есть зазор (люфт).
+          Напечатайте тест: в верхнем ряду пары вертикальных чёрточек, в нижнем — горизонтальных, под каждой парой номер.
+          Найдите в каждом ряду пару, где две чёрточки стоят ровно на одной линии, и введите её номер. Программа будет
+          добирать зазор сама.
+        </div>
+        <Btn small onClick={() => printPattern('backlash')}>Напечатать тест люфта</Btn>
+        <div class="grid2">
+          <Field label="Верхний ряд: пара №" hint="люфт поперёк листа (вдоль строки)">
+            <NumInput value={() => Math.round((c.value.backlash?.[0] ?? 0) / BACKLASH_STEP)} onChange={(v) => c.patch({ backlash: [backlashOf(v), c.peek().backlash?.[1] ?? 0] })} min={0} max={BACKLASH_PAIRS - 1} step={1} />
+          </Field>
+          <Field label="Нижний ряд: пара №" hint="люфт вдоль высоты листа">
+            <NumInput value={() => Math.round((c.value.backlash?.[1] ?? 0) / BACKLASH_STEP)} onChange={(v) => c.patch({ backlash: [c.peek().backlash?.[0] ?? 0, backlashOf(v)] })} min={0} max={BACKLASH_PAIRS - 1} step={1} />
+          </Field>
+        </div>
+        {() => {
+          const b = c.value.backlash ?? [0, 0];
+          return b[0] || b[1] ? <div class="muted small">Поправка: {String(b[0])} мм поперёк, {String(b[1])} мм вдоль. Тест люфта печатается без неё — после поправки пары с тем же номером должны сойтись снова.</div> : null;
+        }}
       </Section>
 
       <Section title="Масштаб (один раз)">

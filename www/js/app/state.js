@@ -180,7 +180,7 @@ export const app = createRoot(() => {
     };
 });
 /** План для чужого G-кода: штрихи только для предпросмотра. */
-function gcodePlan(lines) {
+export function gcodePlan(lines) {
     const { strokes, lineStroke } = parseGcodePaths(lines, (z) => app.isPenDown(z));
     const f = app.frame.peek();
     const paperStrokes = strokes.map((s) => {

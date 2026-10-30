@@ -114,6 +114,8 @@ export interface Calibration {
   lastMPos: [number, number, number] | null;
   /** калибровка, возможно, устарела (плата перезагружалась) */
   stale: boolean;
+  /** люфт механики, мм: [поперёк листа (вдоль строки), вдоль высоты листа] — из теста люфта */
+  backlash?: [number, number];
 }
 
 export interface PenSettings {

@@ -1,11 +1,13 @@
 // Действия: подключение, калибровка, ручное управление, печать, тесты.
-import { app } from "./state.js";
+import { app, gcodePlan } from "./state.js";
 import { signal, effect, createRoot } from "../ui/reactive.js";
 import { WebSerialTransport, serialApi, SPP_UUID } from "../grbl/webserial.js";
 import { SimulatorTransport } from "../grbl/simulator.js";
 import { paperToWork, workToPaper, penZ } from "../core/calibration.js";
 import { buildPlan, fmt } from "../core/plan.js";
 import { layoutText } from "../core/layout.js";
+import { backlashTestGcode } from "../core/backlash.js";
+import { BUILTIN_FONTS } from "../fonts/fonts.js";
 import { toast, beep, systemNotify, keepAwake, askNotifications, downloadText, stamp, fmtTime } from "./notify.js";
 import { GrblError } from "../grbl/machine.js";
 const { machine, job, calib, prefs } = app;
@@ -708,6 +710,16 @@ export function patternPlanFor(kind) {
                 return patternPlan([...textStrokes(String(fd), L, v + 1.5, 3), { pts: wave, line: 1 }], 'скорость ' + fd, fd);
             });
             return mergePlans(plans, 'полоса скоростей');
+        }
+        case 'backlash': {
+            // без поправки на люфт и медленно: меряем саму механику
+            const g = BUILTIN_FONTS.find((x) => x.id === 'gost-b');
+            const digit = (ch) => {
+                const gl = g.glyphs.get(ch)?.[0];
+                return gl ? gl.s.map((st) => st.map((c, i) => (i % 2 === 0 ? c / g.capHeight : (g.capHeight - c) / g.capHeight))) : [];
+            };
+            const fr = f.ready ? f : { ...f, width: W, height: H };
+            return gcodePlan(backlashTestGcode(fr, calib.peek(), app.pen.peek(), 1500, digit));
         }
         case 'paragraph': {
             const r = layoutText({ text: 'Съешь же ещё этих мягких французских булок, да выпей чаю. Пробный абзац для проверки нажима, скорости и почерка: 0123456789.', font: app.font.peek(), typo: app.typo.peek(), paper: { ...p, startLine: 1 } });
