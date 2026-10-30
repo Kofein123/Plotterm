@@ -323,14 +323,15 @@ export function readCell(g, H, cell) {
     }
     // печатные линии клетки (на ч/б принтере они выходят тёмными): базовая, пунктир x-высоты, края клетки
     const by = (cell.baseline - y0) * RES;
+    const XH = cell.xh ?? X_HEIGHT;
     // найденная на фото базовая линия точнее расчётной: лист бывает выгнут, а фото — с искажениями объектива
     const foundBase = eraseLine(bin, W, Hh, by, true, 2);
-    for (const y of [(foundBase ?? by) - X_HEIGHT * RES, -inset * RES, (cell.h - inset) * RES])
+    for (const y of [(foundBase ?? by) - XH * RES, ...(cell.guides ?? []).map((g) => (foundBase ?? by) - g * RES), -inset * RES, (cell.h - inset) * RES])
         eraseLine(bin, W, Hh, y, true);
     for (const x of [-inset * RES, (cell.w - inset) * RES])
         eraseLine(bin, W, Hh, x, false);
     // обрывки пунктира и полутонов: тонкие плоские пятна, целиком лежащие на линии
-    const lineRows = [foundBase ?? by, (foundBase ?? by) - X_HEIGHT * RES];
+    const lineRows = [foundBase ?? by, (foundBase ?? by) - XH * RES, ...(cell.guides ?? []).map((g) => (foundBase ?? by) - g * RES)];
     for (const c of components(bin, W, Hh)) {
         const h = c.maxY - c.minY + 1, w = c.maxX - c.minX + 1;
         if (h > 0.4 * RES || w > 2 * RES)
@@ -346,7 +347,7 @@ export function readCell(g, H, cell) {
     if (ink < 0.15 * RES * RES)
         return null;
     const before = ink;
-    const dots = extractDots(bin, W, Hh, X_HEIGHT * RES * 0.36);
+    const dots = extractDots(bin, W, Hh, XH * RES * 0.36);
     thin(bin, W, Hh);
     pruneStairs(bin, W, Hh);
     let skel = 0;
@@ -355,7 +356,7 @@ export function readCell(g, H, cell) {
     let paths = joinChains(trace(bin, W, Hh, Math.max(3, (before / Math.max(skel, 1)) * 0.9)), 2.5);
     // плоские огрызки печатной линии, пережившие стирание: на странице они выглядят как лишние точки
     if (/[\p{L}\p{N}]/u.test(cell.ch) && paths.length > 1) {
-        const rows = [foundBase ?? by, (foundBase ?? by) - X_HEIGHT * RES];
+        const rows = lineRows;
         const near = (p, q) => {
             for (let i = 0; i < p.length; i += 2)
                 for (let j = 0; j < q.length; j += 2)
@@ -383,8 +384,8 @@ export function readCell(g, H, cell) {
             return true;
         });
     }
-    // выше 8 мм над строкой букв не бывает: это подпись клетки или чужая буква сверху
-    const ceiling = (foundBase ?? by) - 8 * RES;
+    // выше 8 мм над строкой букв не бывает (в крупной клетке — выше верха клетки): это подпись или чужая буква сверху
+    const ceiling = (foundBase ?? by) - Math.max(8, cell.baseline - cell.y) * RES;
     paths = paths.filter((p) => p.some((v, i) => i % 2 === 1 && v > ceiling));
     // крошечный отдельный штрих (меньше 0,7 мм) у буквы без точек — капля или соринка
     if (!DOTTED.test(cell.ch) && paths.length > 1) {
@@ -410,13 +411,13 @@ export function readCell(g, H, cell) {
             paths = kept;
     }
     // точки над ё, й, і стоят выше пунктира; «точка» прямо на линии у буквы — это кусок штриха печатной линии
-    const lineYs = [foundBase ?? by, (foundBase ?? by) - X_HEIGHT * RES];
+    const lineYs = lineRows;
     const isText = /[\p{L}\p{N}]/u.test(cell.ch);
     for (const [cx, cy, r] of dots) {
         if (cy < ceiling || !DOTTED.test(cell.ch))
             continue;
         // у ё, й, і точки только сверху
-        if (/\p{L}/u.test(cell.ch) && cy > (foundBase ?? by) - X_HEIGHT * RES * 0.45)
+        if (/\p{L}/u.test(cell.ch) && cy > (foundBase ?? by) - XH * RES * 0.45)
             continue;
         if (isText && lineYs.some((y) => Math.abs(cy - y) < 0.6 * RES))
             continue;
@@ -424,7 +425,7 @@ export function readCell(g, H, cell) {
     }
     if (!paths.length)
         return null;
-    const k = CUSTOM_X_HEIGHT / (X_HEIGHT * RES);
+    const k = CUSTOM_X_HEIGHT / (XH * RES);
     const basePx = foundBase ?? by;
     const strokes = [];
     for (const p of paths) {
@@ -810,7 +811,7 @@ function fitShifts(cells, raw) {
     return (c) => [ev(kx, c), ev(ky, c)];
 }
 /** Строчные без выносных элементов — по ним меряем x-высоту; прописные без хвостов и надстрочных знаков. */
-const X_LETTERS = new Set([...'аеиклмнопстхчшыьэюяжгacemnorsuvwxz']);
+const X_LETTERS = new Set([...'аеиклмнопстхчшыьэюяжгәңөacemnorsuvwxz']);
 const CAPS = new Set([...'АБВГЕЖЗИКЛМНОПРСТУФХЧШЫЭЮЯABCDEFGHIKLMNOPRSTUVWXYZ']);
 /** у человека в конспектах прописные ≈ 1,6 строчной; в клетке шаблона их часто пишут мельче */
 const CAP_RATIO = 1.6;

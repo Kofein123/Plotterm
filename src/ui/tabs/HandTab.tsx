@@ -8,7 +8,7 @@ import { Btn, Field, Icon, NumInput, Note, Section, Select, Segmented } from '..
 import { downloadText, pickFile, toast } from '../../app/notify.ts';
 import { importSvgFont } from '../../io/svgfont.ts';
 import { importOutlineFont } from '../../io/outlinefont.ts';
-import { GRID_CORNERS, templateSvg } from '../../io/template.ts';
+import { gridCorners, templateSvg } from '../../io/template.ts';
 import { findMarks, readTemplate, type Gray, type TemplateReadResult } from '../../io/templateImport.ts';
 import { imageFileToGray } from '../../io/image.ts';
 import { addVariants } from '../../fonts/variants.ts';
@@ -277,8 +277,8 @@ export async function importFont() {
   }
 }
 
-/** какой лист-шаблон печатаем и читаем: 1 — кириллица, 2 — латиница и формулы */
-const sheetNo = signal(1);
+/** какой лист-шаблон печатаем и читаем: 3–5 — крупные (русские; қазақша, цифры, знаки; латиница), 1–2 — прежние мелкие */
+const sheetNo = signal(3);
 
 function downloadTemplate() {
   downloadText(`plotterm-list-shablon-${sheetNo.peek()}.svg`, templateSvg(sheetNo.peek()), 'image/svg+xml');
@@ -333,7 +333,7 @@ async function finishCorners() {
   try {
     importBusy.value = 'Снимаю буквы…';
     await new Promise((r) => setTimeout(r, 0));
-    await applyTemplate(readTemplate(p.gray, p.pts, GRID_CORNERS, p.sheet));
+    await applyTemplate(readTemplate(p.gray, p.pts, gridCorners(p.sheet), p.sheet));
     cornerPick.value = null;
   } catch (e: any) {
     toast('Не получилось прочитать лист: ' + (e?.message ?? e), 'err');
@@ -444,13 +444,14 @@ export function HandTab() {
         </div>
         <div class="muted small">
           Проще всего — лист-шаблон: распечатать, написать по букве в клетке своей ручкой, сфотографировать.
-          Каждый заполненный лист добавляет ещё один вариант каждой буквы.
+          Каждый заполненный лист добавляет ещё один вариант каждой буквы. Крупные листы А, Б, В снимаются точнее;
+          для живого почерка заполните лист А 2–4 раза, листы Б и В — по разу.
         </div>
         <Segmented
           small
           value={() => sheetNo.value}
           onChange={(v) => { sheetNo.value = v; }}
-          options={[{ value: 1, label: 'Лист 1 · кириллица' }, { value: 2, label: 'Лист 2 · латиница, формулы' }]}
+          options={[{ value: 3, label: 'А · русские' }, { value: 4, label: 'Б · қазақша, цифры, знаки' }, { value: 5, label: 'В · латиница' }, { value: 1, label: 'мелкий 1' }, { value: 2, label: 'мелкий 2' }]}
         />
         <div class="row wrap">
           <Btn small onClick={downloadTemplate}><Icon name="download" size={14} /> Лист-шаблон А4</Btn>

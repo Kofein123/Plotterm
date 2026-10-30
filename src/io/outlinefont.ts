@@ -162,7 +162,9 @@ export function thin(img: Uint8Array, W: number, H: number) {
           const p2 = at(x, y - 1), p3 = at(x + 1, y - 1), p4 = at(x + 1, y), p5 = at(x + 1, y + 1);
           const p6 = at(x, y + 1), p7 = at(x - 1, y + 1), p8 = at(x - 1, y), p9 = at(x - 1, y - 1);
           const b = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
-          if (b < 2 || b > 6) continue;
+          // b ≥ 3, а не 2 (поправка Лю — Ванга): иначе диагональ толщиной 2 пикселя стирается целиком —
+          // так пропадала верхняя ветка «к» в крупной клетке
+          if (b < 3 || b > 6) continue;
           const seq = [p2, p3, p4, p5, p6, p7, p8, p9, p2];
           let a = 0;
           for (let i = 0; i < 8; i++) if (!seq[i] && seq[i + 1]) a++;

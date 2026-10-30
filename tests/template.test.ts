@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BUILTIN_FONTS } from '../src/fonts/fonts.ts';
-import { GRID_CORNERS, MARKS, MARK_SIZE, SHEET_H, SHEET_W, TEMPLATE_CHARS, TEMPLATE_CHARS_2, X_HEIGHT, templateCells, templateSvg } from '../src/io/template.ts';
+import { GRID_CORNERS, MARKS, MARK_SIZE, SHEET_H, SHEET_W, TEMPLATE_CHARS, TEMPLATE_CHARS_2, X_HEIGHT, templateCells, templateChars, templateSvg } from '../src/io/template.ts';
 import { findMarks, homography, orderStrokes, project, readTemplate, type Gray } from '../src/io/templateImport.ts';
 
 const font = BUILTIN_FONTS.find((f) => f.id === 'gost-b')!;
@@ -31,7 +31,8 @@ function drawSheet(lineLum = 200, writeH = X_HEIGHT, sheetNo = 1): { sheet: Gray
     // светлые направляющие, как на печати
     line(c.x + 1, c.baseline, c.x + c.w - 1, c.baseline, 0.12, lineLum);
     line(c.x, c.y - 3, c.x + c.w, c.y - 3, 0.1, lineLum + 15);
-    for (let x = c.x + 1; x < c.x + c.w - 1; x += 1.6) line(x, c.baseline - X_HEIGHT, x + 0.8, c.baseline - X_HEIGHT, 0.1, lineLum + 15);
+    for (const dy of [c.xh ?? X_HEIGHT, ...(c.guides ?? [])])
+      for (let x = c.x + 1; x < c.x + c.w - 1; x += 1.6) line(x, c.baseline - dy, x + 0.8, c.baseline - dy, 0.1, lineLum + 15);
     line(c.x, c.y - 3, c.x, c.y + c.h, 0.1, lineLum + 15);
     if (written.has(c.ch)) continue; // второй экземпляр строчных оставляем пустым
     const g = font.glyphs.get(c.ch)?.[0];
@@ -176,3 +177,19 @@ test('без меток — понятная ошибка', () => {
   assert.equal(findMarks(blank), null);
   assert.throws(() => readTemplate(blank), /метки/);
 });
+
+test('крупные листы А, Б, В: все буквы алфавитов, клетки на листе, четыре направляющие', () => {
+  const all = [3, 4, 5].flatMap((n) => templateChars(n));
+  for (const ch of 'АаЯяЁёӘәҢңІі09.,—«»AazZπ≤') assert.ok(all.includes(ch), ch);
+  for (const n of [3, 4, 5]) {
+    for (const c of templateCells(n)) assert.ok(c.x >= 12 && c.x + c.w <= 198 && c.y + c.h <= 278, `лист ${n}: клетка «${c.ch}» вне листа`);
+    assert.equal(templateSvg(n).match(/<line/g)?.length, templateCells(n).length * 4);
+  }
+});
+
+// крупная клетка: пишут мельче пунктира (4 мм из 5) — снимается точнее мелкого листа (там допуск 14)
+test('крупный лист А: русские буквы снимаются', () => checkPhoto(200, 4, 11, 3, 'абвгдежзиклмнопрстуфхцчшщэюяБДЖЩЯ'));
+test('крупный лист Б: казахские буквы и цифры', () => checkPhoto(200, 4, 13, 4, 'әғқңөұүһі0123456789'));
+// тёмные (ч/б) линии: у букв с палкой слева (қ, һ, і) к низу прилипает огрызок базовой линии —
+// как и на мелком листе, допуск шире; лучше печатать в цвете
+test('крупный лист Б: тёмные линии не превращаются в буквы', () => checkPhoto(140, 4, 25, 4, 'әғқңөұүһі0123456789'));
