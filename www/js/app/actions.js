@@ -220,8 +220,9 @@ export async function jogStep(du, dv) {
             await machine.jogTo(x, y, null, feed);
         }
         else {
-            // до калибровки: ←→ = X, ↑↓ = Y станка
-            await machine.jog(du, -dv, 0, feed);
+            // до калибровки: по осям станка, но в тех же направлениях, что и метка на превью
+            const [x, y] = paperToWork(app.frame.peek(), du, dv);
+            await machine.jog(x, y, 0, feed);
         }
     }
     catch (e) {
@@ -243,7 +244,8 @@ export async function jogContinuousStart(du, dv) {
             await machine.jogTo(x, y, null, feed);
         }
         else {
-            await machine.jog(du * 300, -dv * 300, 0, feed);
+            const [x, y] = paperToWork(app.frame.peek(), du * 300, dv * 300);
+            await machine.jog(x, y, 0, feed);
         }
     }
     catch (e) {
@@ -381,6 +383,17 @@ export function calibGridOrigin() {
     const [u, v] = workToPaper(app.frame.peek(), x, y);
     calib.patch({ gridOrigin: [Math.round(u * 100) / 100, Math.round(v * 100) / 100] });
     toast('Запомнена линия сетки: строки встанут на линии клеток.', 'ok');
+}
+/** Стрелка едет не туда — перевернуть ось (до шага 3; шаг 3 потом сам узнаёт направление). */
+export function calibFlipAxis(axis) {
+    const { corner: c, swap } = calib.peek();
+    const i = swap ? 1 - axis : axis;
+    calib.patch({ corner: i === 0 ? [-c[0], c[1]] : [c[0], -c[1]] });
+}
+/** Тетрадь стоит поперёк осей станка: ←→ двигают ось Y, ↑↓ — ось X. Лист после этого надо задать заново. */
+export function calibSwapAxes() {
+    const { corner: c, swap } = calib.peek();
+    calib.patch({ swap: !swap, corner: [c[1], c[0]], cornerSet: false, skewPoint: null });
 }
 export function calibResetAll() {
     if (!confirm('Сбросить всю калибровку?'))

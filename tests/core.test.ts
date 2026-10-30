@@ -87,6 +87,16 @@ test('калибровка: прямое и обратное преобразо�
   assert.ok(Math.abs(f.width - 200) < 1e-6 && Math.abs(f.height - 280) < 1e-6, `${f.width} ${f.height}`);
 });
 
+test('калибровка: тетрадь поперёк осей — ширина листа идёт по Y станка', () => {
+  // X станка вдоль высоты листа (вниз по листу = −X), Y — вдоль ширины
+  const f = sheetFrame({ ...calib, swap: true, corner: [-280, 200] });
+  assert.ok(Math.abs(f.width - 200) < 1e-9 && Math.abs(f.height - 280) < 1e-9);
+  assert.deepEqual(paperToWork(f, 10, 0), [-0, 10]);
+  assert.deepEqual(paperToWork(f, 0, 10), [-10, 0]);
+  const [u, v] = workToPaper(f, ...paperToWork(f, 30, 40));
+  assert.ok(Math.abs(u - 30) < 1e-9 && Math.abs(v - 40) < 1e-9);
+});
+
 test('план: G-код поднимает и опускает ручку по Z', () => {
   const r = layoutText({ text: 'Тест', font: BUILTIN_FONTS[0], typo, paper });
   const plan = buildPlan({ strokes: r.pages[0].strokes, pageW: 210, pageH: 297, rotate180: false, frame: sheetFrame(calib), calib, pen, speed, limits: DEFAULT_LIMITS, dryRun: false, reorder: true, title: 't' });
