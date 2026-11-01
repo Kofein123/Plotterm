@@ -91,7 +91,7 @@ export function autoJoin(g: GlyphData, xHeight: number): GlyphData {
  * Штрихи буквы, которые сходятся концами (скелет из .ttf рвётся на развилках), склеиваем в один:
  * чернила те же, а ручка поднимается реже. Из нескольких продолжений берём самое прямое.
  */
-export function mergeTouching(strokes: number[][], tol: number): number[][] {
+export function mergeTouching(strokes: number[][], tol: number, minCos = -2): number[][] {
   const out = strokes.filter((s) => s.length >= 4).map((s) => s.slice());
   const rev = (st: number[]) => {
     const r: number[] = [];
@@ -117,6 +117,7 @@ export function mergeTouching(strokes: number[][], tol: number): number[][] {
             if (Math.hypot(a[a.length - 2] - b[0], a[a.length - 1] - b[1]) > tol) continue;
             const da = dir(a, true), db = dir(b, false);
             const cos = da[0] * db[0] + da[1] * db[1];
+            if (cos < minCos) continue;
             if (!best || cos > best.cos) best = { i, j, ri, rj, cos };
           }
       }
@@ -129,10 +130,37 @@ export function mergeTouching(strokes: number[][], tol: number): number[][] {
   return out;
 }
 
+/**
+ * Соринки у базовой линии: точка или короткая чёрточка целиком в полосе вокруг строки (остаток направляющей
+ * или рамки клетки на фото). В букве такого штриха не бывает: точки у «ё», «й» — сверху, хвосты «ц», «щ», «д» — длиннее.
+ */
+export function dropBaselineSpecks(g: GlyphData, xh: number): GlyphData {
+  if (g.s.length < 2) return g;
+  const isSpeck = (st: number[]) => {
+    let len = 0, minY = Infinity, maxY = -Infinity;
+    for (let i = 0; i < st.length; i += 2) {
+      minY = Math.min(minY, st[i + 1]); maxY = Math.max(maxY, st[i + 1]);
+      if (i) len += Math.hypot(st[i] - st[i - 2], st[i + 1] - st[i - 1]);
+    }
+    return len < xh * 0.15 && minY >= -xh * 0.12 && maxY <= xh * 0.08;
+  };
+  const keep = g.s.map((st) => !isSpeck(st));
+  if (keep.every(Boolean) || !keep.some(Boolean)) return g;
+  const out: GlyphData = { ...g, s: g.s.filter((_, i) => keep[i]) };
+  if (g.oi !== undefined) {
+    if (!keep[g.oi]) delete out.oi;
+    else out.oi = keep.slice(0, g.oi).filter(Boolean).length;
+  }
+  return out;
+}
+
 function prepareGlyph(g: GlyphData, ch: string): GlyphData {
+  if (/\p{L}/u.test(ch)) g = dropBaselineSpecks(g, CUSTOM_X_HEIGHT);
   // у снятых с шаблона букв уже есть точки входа/выхода и порядок штрихов — их не трогаем
   if (g.i || g.o) return g;
-  const s = g.s.length > 1 ? mergeTouching(g.s, CUSTOM_X_HEIGHT * 0.1) : g.s;
+  // сначала касающиеся концы, потом разрывы до 0,22 x-высоты, если линия идёт дальше в ту же сторону
+  // (на фото направляющая «разрезает» штрих — так у «е» отрывался хвостик)
+  const s = g.s.length > 1 ? mergeTouching(mergeTouching(g.s, CUSTOM_X_HEIGHT * 0.1), CUSTOM_X_HEIGHT * 0.22, 0.6) : g.s;
   const m = s === g.s ? g : { ...g, s };
   return /\p{Ll}/u.test(ch) ? autoJoin(m, CUSTOM_X_HEIGHT) : m;
 }
