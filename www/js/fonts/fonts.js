@@ -2,6 +2,7 @@ import gostA from "./data/gostA.js";
 import gostB from "./data/gostB.js";
 import propis from "./data/propis.js";
 import { synthesizeKazakh } from "./kazakh.js";
+import { deformGlyph } from "./variants.js";
 function fromData(d) {
     const glyphs = new Map();
     for (const [ch, g] of Object.entries(d.glyphs))
@@ -174,6 +175,45 @@ function prepareGlyph(g, ch) {
     const m = s === g.s ? g : { ...g, s };
     return /\p{Ll}/u.test(ch) ? autoJoin(m, CUSTOM_X_HEIGHT) : m;
 }
+/**
+ * Запасной шрифт «от руки»: цифры и знаки ГОСТа рядом с живым почерком выглядят как напечатанные.
+ * Каждый знак получает 4 варианта с плавным изгибом и своей шириной — ровнее не бывает и у руки.
+ */
+const handCache = new Map();
+export function handFallback(base) {
+    const hit = handCache.get(base.id);
+    if (hit)
+        return hit;
+    const glyphs = new Map();
+    for (const [ch, vs] of base.glyphs) {
+        if (!vs.length)
+            continue;
+        const seed = [...ch].reduce((a, c) => a * 31 + c.codePointAt(0), 7);
+        glyphs.set(ch, [0, 1, 2, 3].map((k) => deformGlyph(vs[0], base.xHeight, seed * 5 + k, 1.8)));
+    }
+    // точка и запятая в чертёжном шрифте — крошечные: в «2,5» запятая пропадает. От руки они крупнее
+    const X = base.xHeight;
+    const dot = (cx, cy, r = 0.06) => [cx - r * X, cy, cx, cy + r * X, cx + r * X, cy, cx, cy - r * X, cx - r * X * 0.8, cy].map((v) => Math.round(v * 10) / 10);
+    const comma = (cx) => [cx + 0.04 * X, 0.08 * X, cx + 0.02 * X, -0.06 * X, cx - 0.08 * X, -0.32 * X].map((v) => Math.round(v * 10) / 10);
+    const P = {
+        ',': { w: 0.32 * X, s: [comma(0.16 * X)] },
+        '.': { w: 0.3 * X, s: [dot(0.13 * X, 0.05 * X)] },
+        '·': { w: 0.32 * X, s: [dot(0.16 * X, 0.48 * X)] },
+        ':': { w: 0.3 * X, s: [dot(0.13 * X, 0.05 * X), dot(0.13 * X, 0.72 * X)] },
+        ';': { w: 0.32 * X, s: [dot(0.16 * X, 0.72 * X), comma(0.16 * X)] },
+    };
+    for (const [ch, g] of Object.entries(P))
+        glyphs.set(ch, [g]);
+    const f = { ...base, id: base.id + '-hand', glyphs };
+    handCache.set(base.id, f);
+    return f;
+}
+/** Латинские буквы, которые пишутся как русские: K₁, T₁, A, B… в формулах — своим почерком. */
+const LOOKALIKE = {
+    // прописные Т, Н, Р у руки часто с росчерками и в формуле не читаются — их берём из запасного шрифта
+    A: 'А', B: 'В', C: 'С', E: 'Е', K: 'К', M: 'М', O: 'О', X: 'Х',
+    a: 'а', c: 'с', e: 'е', o: 'о', p: 'р', x: 'х', y: 'у',
+};
 /** Пользовательский шрифт. Недостающие символы берутся из базового (масштабируются под xHeight). */
 export function fromCustom(rec, all = BUILTIN_FONTS) {
     const base = all.find((f) => f.id === rec.baseFontId) ?? BUILTIN_FONTS[0];
@@ -184,6 +224,9 @@ export function fromCustom(rec, all = BUILTIN_FONTS) {
     // казахские буквы, ё и √ — достраиваем из своих же букв, чтобы стиль не смешивался
     const metrics = { xHeight: CUSTOM_X_HEIGHT, capHeight: CUSTOM_X_HEIGHT * (base.capHeight / base.xHeight), descender: CUSTOM_X_HEIGHT * (base.descender / base.xHeight) };
     synthesizeKazakh(glyphs, metrics);
+    for (const [lat, cyr] of Object.entries(LOOKALIKE))
+        if (!glyphs.has(lat) && glyphs.has(cyr))
+            glyphs.set(lat, glyphs.get(cyr));
     return {
         id: rec.id,
         name: rec.name,
@@ -194,7 +237,7 @@ export function fromCustom(rec, all = BUILTIN_FONTS) {
         letterSpacing: rec.letterSpacing,
         wordSpacing: rec.wordSpacing,
         glyphs,
-        fallback: base,
+        fallback: handFallback(base),
     };
 }
 /** Найти глиф с учётом запасного шрифта. variant — номер варианта (берётся по модулю). */
