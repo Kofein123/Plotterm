@@ -184,11 +184,24 @@ export function dropStrays(g, xh, ch) {
         }
         return { len, x0, x1, y0, y1 };
     });
+    // расстояние от точек одного штриха до отрезков другого (у прямой палочки всего две точки — по вершинам нельзя)
+    const seg = (px, py, b) => {
+        if (b.length < 4)
+            return Math.hypot(px - b[0], py - b[1]);
+        let m = Infinity;
+        for (let j = 2; j < b.length; j += 2) {
+            const ax = b[j - 2], ay = b[j - 1], dx = b[j] - ax, dy = b[j + 1] - ay;
+            const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy || 1)));
+            m = Math.min(m, Math.hypot(px - ax - t * dx, py - ay - t * dy));
+        }
+        return m;
+    };
     const dist = (a, b) => {
         let m = Infinity;
         for (let i = 0; i < a.length; i += 2)
-            for (let j = 0; j < b.length; j += 2)
-                m = Math.min(m, Math.hypot(a[i] - b[j], a[i + 1] - b[j + 1]));
+            m = Math.min(m, seg(a[i], a[i + 1], b));
+        for (let j = 0; j < b.length; j += 2)
+            m = Math.min(m, seg(b[j], b[j + 1], a));
         return m;
     };
     const keep = g.s.map(() => true);
