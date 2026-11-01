@@ -48,7 +48,50 @@ export function layoutText(inp) {
     const joinTrim = typo.xHeight * 0.18;
     const joinProbe = Math.max(0.2, typo.xHeight * 0.12);
     const trace = inp.trace ? { glyphs: [], runs: [] } : undefined;
+    // --- формулы: дробь столбиком и корень с чертой (размеры в мм при масштабе sc) ---
+    const FRAC_SCALE = 0.8;
+    const fracPad = (sc) => typo.xHeight * 0.18 * sc;
+    const rootW = (sc) => typo.xHeight * 0.9 * sc;
+    const runWidth = (items, sc) => items.reduce((a, it) => a + (it.ch === ' ' && !it.script ? spaceW * 0.6 * sc : itemWidth(it, sc)), 0);
+    /** высота над базовой линией и глубина под ней, мм */
+    const runExtent = (items, sc) => {
+        let up = typo.xHeight * sc, down = 0;
+        for (const it of items) {
+            const [u, d] = itemExtent(it, sc);
+            up = Math.max(up, u);
+            down = Math.max(down, d);
+        }
+        return [up, down];
+    };
+    const fracAxis = (sc) => typo.xHeight * 0.5 * sc;
+    function itemExtent(it, sc) {
+        if (it.frac) {
+            const fs = sc * FRAC_SCALE;
+            const [nu] = runExtent(it.frac.num, fs);
+            const [du, dd] = runExtent(it.frac.den, fs);
+            const gap = typo.xHeight * 0.32 * sc;
+            return [fracAxis(sc) + gap + nu, -fracAxis(sc) + gap + du + dd];
+        }
+        if (it.sqrt) {
+            const [u, d] = runExtent(it.sqrt, sc);
+            return [u + typo.xHeight * 0.35 * sc, d];
+        }
+        const k = it.script ? SCRIPT_SCALE : 1;
+        const up = (it.script === 1 ? typo.xHeight * 0.55 : 0) + capMm * k;
+        return [up * sc, (it.script === -1 ? typo.xHeight * 0.3 + descMm * 0.4 * k : descMm * 0.4) * sc];
+    }
+    function itemWidth(it, sc) {
+        if (it.frac) {
+            const fs = sc * FRAC_SCALE;
+            return Math.max(runWidth(it.frac.num, fs), runWidth(it.frac.den, fs)) + fracPad(sc) * 2 + letterGap * sc;
+        }
+        if (it.sqrt)
+            return rootW(sc) + runWidth(it.sqrt, sc) + typo.xHeight * 0.25 * sc + letterGap * sc;
+        return charWidth(it) * sc;
+    }
     const charWidth = (it) => {
+        if (it.frac || it.sqrt)
+            return itemWidth(it, 1);
         const g = resolveGlyph(font, it.ch);
         if (g.missing)
             missing.add(it.ch);
@@ -69,6 +112,9 @@ export function layoutText(inp) {
     };
     let page = null;
     let slot = 0;
+    // глубина последней строки под базовой линией (для строк с дробями) и её номер
+    let prevDown = 0;
+    let prevSlot = -10;
     const newPage = () => {
         const m = marginsFor(pages.length);
         page = { index: pages.length, strokes: [], usedLines: 0, totalLines: baselines.length, mirrored: m.mirrored, baselines };
@@ -197,9 +243,17 @@ export function layoutText(inp) {
             lines.push(line);
         if (lines.length)
             lines[lines.length - 1].lastOfPara = true;
-        // размещение
+        // размещение; строке с дробями нужно больше места по высоте — если она заденет соседнюю, пропускаем строку
+        const pitch = baselines.length > 1 ? baselines[1] - baselines[0] : 10;
         for (const lb of lines) {
+            const [up, down] = runExtent(lb.words.flat().map((c) => c.item), 1);
+            if (up > capMm + 0.3 || prevDown > descMm * 0.4 + 0.3) {
+                if (page && slot > 0 && slot < baselines.length && prevSlot === slot - 1 && prevDown + up > pitch - 0.4)
+                    takeSlot();
+            }
             const { page: pg, slot: sl } = takeSlot();
+            prevDown = down;
+            prevSlot = sl;
             const m = marginsFor(pg.index);
             const width = m.right - m.left - Math.max(0, capMm * slantK);
             const indent = lb.firstOfPara && !lb.heading ? typo.indent : 0;
@@ -418,6 +472,13 @@ export function layoutText(inp) {
                     ulStart = x;
                 if (!c.item.underline)
                     flushUnderline(x);
+                if (c.item.frac || c.item.sqrt) {
+                    flushRun();
+                    for (const st of renderMath(c.item, x, baseline, drift, 1))
+                        pg.strokes.push({ pts: st, line: lineNo });
+                    x += c.w;
+                    continue;
+                }
                 const out = renderChar(c, x, baseline, drift, r);
                 if (trace && out.strokes.length)
                     trace.glyphs.push({ ch: c.item.ch, page: pg.index, strokes: out.strokes });
@@ -466,7 +527,67 @@ export function layoutText(inp) {
         });
         flushUnderline(x - letterGap);
     }
-    function renderChar(c, x, baseline, drift, rr) {
+    /** Линия формулы (черта дроби, корень): чуть неровная, как от руки. */
+    function mathLine(pts, drift) {
+        const out = [];
+        for (let i = 0; i < pts.length; i++) {
+            const [u, v] = pts[i];
+            if (i) {
+                const [pu, pv] = pts[i - 1];
+                const n = Math.max(1, Math.ceil(Math.hypot(u - pu, v - pv) / 3));
+                for (let j = 1; j < n; j++) {
+                    const t = j / n, uu = pu + (u - pu) * t;
+                    out.push(uu, pv + (v - pv) * t + drift(uu) + r.sym() * 0.06 * live);
+                }
+            }
+            out.push(u, v + drift(u));
+        }
+        return out;
+    }
+    /** Строка формулы в масштабе sc: буквы, вложенные дроби и корни. */
+    function renderRun(items, x, baseline, drift, sc) {
+        const out = [];
+        for (const it of items) {
+            if (it.ch === ' ' && !it.script) {
+                x += spaceW * 0.6 * sc;
+                continue;
+            }
+            if (it.frac || it.sqrt)
+                out.push(...renderMath(it, x, baseline, drift, sc));
+            else
+                out.push(...renderChar({ item: it, w: 0 }, x, baseline, drift, r, sc).strokes);
+            x += itemWidth(it, sc);
+        }
+        return out;
+    }
+    function renderMath(it, x, baseline, drift, sc) {
+        const out = [];
+        if (it.frac) {
+            const fs = sc * FRAC_SCALE;
+            const w = itemWidth(it, sc) - letterGap * sc;
+            const nw = runWidth(it.frac.num, fs), dw = runWidth(it.frac.den, fs);
+            const axisY = baseline - fracAxis(sc);
+            const gap = typo.xHeight * 0.32 * sc;
+            const [, nd] = runExtent(it.frac.num, fs);
+            const [du] = runExtent(it.frac.den, fs);
+            out.push(...renderRun(it.frac.num, x + (w - nw) / 2, axisY - gap - nd * 0.6, drift, fs));
+            out.push(...renderRun(it.frac.den, x + (w - dw) / 2, axisY + gap + du, drift, fs));
+            const tilt = r.sym() * 0.12 * live;
+            out.push(mathLine([[x + fracPad(sc) * 0.3, axisY - tilt], [x + w - fracPad(sc) * 0.3, axisY + tilt]], drift));
+        }
+        else if (it.sqrt) {
+            const h0 = typo.xHeight * sc;
+            const [up, down] = runExtent(it.sqrt, sc);
+            const top = baseline - up - h0 * 0.3;
+            const bottom = baseline + Math.min(down, h0 * 0.3) * 0.5;
+            const cw = runWidth(it.sqrt, sc);
+            const rw = rootW(sc);
+            out.push(mathLine([[x, baseline - h0 * 0.45], [x + rw * 0.18, baseline - h0 * 0.55], [x + rw * 0.45, bottom], [x + rw * 0.85, top], [x + rw + cw + h0 * 0.15, top]], drift));
+            out.push(...renderRun(it.sqrt, x + rw, baseline, drift, sc));
+        }
+        return out;
+    }
+    function renderChar(c, x, baseline, drift, rr, extra = 1) {
         const first = resolveGlyph(font, c.item.ch);
         let variant = 0;
         if (first.variants > 1) {
@@ -476,11 +597,11 @@ export function layoutText(inp) {
             lastVariant.set(c.item.ch, variant);
         }
         const g = variant ? resolveGlyph(font, c.item.ch, variant) : first;
-        const sc = (c.item.script ? SCRIPT_SCALE : 1) * (1 + rr.sym() * 0.05 * live);
+        const sc = (c.item.script ? SCRIPT_SCALE : 1) * (1 + rr.sym() * 0.05 * live) * extra;
         const rot = ((rr.sym() * 3 * Math.PI) / 180) * live;
         const dx = rr.sym() * 0.3 * live;
         const dy = rr.sym() * 0.15 * live;
-        const scriptDy = c.item.script === 1 ? typo.xHeight * 0.55 : c.item.script === -1 ? -typo.xHeight * 0.3 : 0;
+        const scriptDy = (c.item.script === 1 ? typo.xHeight * 0.55 : c.item.script === -1 ? -typo.xHeight * 0.3 : 0) * extra;
         const k = g.k * s * sc;
         const cx = (g.glyph.w * k) / 2;
         const cy = (typo.xHeight * sc) / 2;

@@ -88,3 +88,32 @@ export function addVariants(glyphs, xHeight, count) {
     }
     return { glyphs: res, added };
 }
+/**
+ * Снятые с фото варианты одной буквы иногда испорчены: в клетку попала соседняя буква, кусок печатной линии
+ * или штрих порвался. Такой вариант заметно отличается от остальных размером или длиной линий — убираем его,
+ * если вариантов хватает (остаётся не меньше двух).
+ */
+export function dropOutliers(vs) {
+    if (vs.length < 3)
+        return vs;
+    const m = vs.map((g) => {
+        let len = 0, x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (const s of g.s)
+            for (let i = 0; i < s.length; i += 2) {
+                x0 = Math.min(x0, s[i]);
+                x1 = Math.max(x1, s[i]);
+                y0 = Math.min(y0, s[i + 1]);
+                y1 = Math.max(y1, s[i + 1]);
+                if (i)
+                    len += Math.hypot(s[i] - s[i - 2], s[i + 1] - s[i - 1]);
+            }
+        return [...[len, x1 - x0, y1 - y0].map((v) => Math.max(v, 5)), (y0 + y1) / 2];
+    });
+    const med = [0, 1, 2, 3].map((k) => m.map((r) => r[k]).sort((a, b) => a - b)[m.length >> 1]);
+    // размеры сравниваем в разах, а высоту над строкой — в долях высоты буквы (сдвиг на полбуквы = в 1,45 раза)
+    const bad = m.map((r) => Math.max(...r.slice(0, 3).map((v, k) => Math.abs(Math.log(v / med[k]))), (Math.abs(r[3] - med[3]) / med[2]) * 0.75));
+    const keep = vs.map((_, i) => i).filter((i) => bad[i] < Math.log(1.45));
+    if (keep.length >= 2)
+        return keep.map((i) => vs[i]);
+    return vs.map((_, i) => i).sort((a, b) => bad[a] - bad[b]).slice(0, 2).map((i) => vs[i]);
+}

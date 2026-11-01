@@ -3,6 +3,7 @@ import gostA from './data/gostA.ts';
 import gostB from './data/gostB.ts';
 import propis from './data/propis.ts';
 import { synthesizeKazakh } from './kazakh.ts';
+import { deformGlyph, dropOutliers } from './variants.ts';
 
 function fromData(d: FontData): StrokeFont {
   const glyphs = new Map<string, GlyphData[]>();
@@ -91,7 +92,7 @@ export function autoJoin(g: GlyphData, xHeight: number): GlyphData {
  * Штрихи буквы, которые сходятся концами (скелет из .ttf рвётся на развилках), склеиваем в один:
  * чернила те же, а ручка поднимается реже. Из нескольких продолжений берём самое прямое.
  */
-export function mergeTouching(strokes: number[][], tol: number): number[][] {
+export function mergeTouching(strokes: number[][], tol: number, minCos = -2): number[][] {
   const out = strokes.filter((s) => s.length >= 4).map((s) => s.slice());
   const rev = (st: number[]) => {
     const r: number[] = [];
@@ -117,6 +118,7 @@ export function mergeTouching(strokes: number[][], tol: number): number[][] {
             if (Math.hypot(a[a.length - 2] - b[0], a[a.length - 1] - b[1]) > tol) continue;
             const da = dir(a, true), db = dir(b, false);
             const cos = da[0] * db[0] + da[1] * db[1];
+            if (cos < minCos) continue;
             if (!best || cos > best.cos) best = { i, j, ri, rj, cos };
           }
       }
@@ -129,22 +131,176 @@ export function mergeTouching(strokes: number[][], tol: number): number[][] {
   return out;
 }
 
+/**
+ * Соринки у базовой линии: точка или короткая чёрточка целиком в полосе вокруг строки (остаток направляющей
+ * или рамки клетки на фото). В букве такого штриха не бывает: точки у «ё», «й» — сверху, хвосты «ц», «щ», «д» — длиннее.
+ */
+export function dropBaselineSpecks(g: GlyphData, xh: number): GlyphData {
+  if (g.s.length < 2) return g;
+  const isSpeck = (st: number[]) => {
+    let len = 0, minY = Infinity, maxY = -Infinity;
+    for (let i = 0; i < st.length; i += 2) {
+      minY = Math.min(minY, st[i + 1]); maxY = Math.max(maxY, st[i + 1]);
+      if (i) len += Math.hypot(st[i] - st[i - 2], st[i + 1] - st[i - 1]);
+    }
+    return len < xh * 0.15 && minY >= -xh * 0.12 && maxY <= xh * 0.08;
+  };
+  const keep = g.s.map((st) => !isSpeck(st));
+  if (keep.every(Boolean) || !keep.some(Boolean)) return g;
+  const out: GlyphData = { ...g, s: g.s.filter((_, i) => keep[i]) };
+  if (g.oi !== undefined) {
+    if (!keep[g.oi]) delete out.oi;
+    else out.oi = keep.slice(0, g.oi).filter(Boolean).length;
+  }
+  return out;
+}
+
+/** буквы, у которых отдельные короткие штрихи — часть буквы (точки, кратка) */
+const HAS_MARKS = new Set([...'йЙёЁіІiјjJ!?:;%№ыЫ']);
+
+/**
+ * Обрывки печатных линий и соседних букв, попавшие в клетку: короткий штрих далеко от буквы или длинная ровная
+ * горизонталь, торчащая за букву (кусок направляющей). У букв с точками короткие штрихи не трогаем.
+ */
+export function dropStrays(g: GlyphData, xh: number, ch: string): GlyphData {
+  if (g.s.length < 2) return g;
+  const info = g.s.map((st) => {
+    let len = 0, x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (let i = 0; i < st.length; i += 2) {
+      x0 = Math.min(x0, st[i]); x1 = Math.max(x1, st[i]); y0 = Math.min(y0, st[i + 1]); y1 = Math.max(y1, st[i + 1]);
+      if (i) len += Math.hypot(st[i] - st[i - 2], st[i + 1] - st[i - 1]);
+    }
+    return { len, x0, x1, y0, y1 };
+  });
+  // расстояние от точек одного штриха до отрезков другого (у прямой палочки всего две точки — по вершинам нельзя)
+  const seg = (px: number, py: number, b: number[]) => {
+    if (b.length < 4) return Math.hypot(px - b[0], py - b[1]);
+    let m = Infinity;
+    for (let j = 2; j < b.length; j += 2) {
+      const ax = b[j - 2], ay = b[j - 1], dx = b[j] - ax, dy = b[j + 1] - ay;
+      const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy || 1)));
+      m = Math.min(m, Math.hypot(px - ax - t * dx, py - ay - t * dy));
+    }
+    return m;
+  };
+  const dist = (a: number[], b: number[]) => {
+    let m = Infinity;
+    for (let i = 0; i < a.length; i += 2) m = Math.min(m, seg(a[i], a[i + 1], b));
+    for (let j = 0; j < b.length; j += 2) m = Math.min(m, seg(b[j], b[j + 1], a));
+    return m;
+  };
+  const keep = g.s.map(() => true);
+  // самый длинный штрих — основа буквы; к ней цепляем всё, что ближе 0,25 x-высоты (и так далее по цепочке)
+  const main = info.reduce((b, c, i) => (c.len > info[b].len ? i : b), 0);
+  const core = new Set([main]);
+  for (let grow = true; grow; ) {
+    grow = false;
+    g.s.forEach((st, i) => {
+      if (core.has(i)) return;
+      if ([...core].some((j) => dist(st, g.s[j]) <= xh * 0.25)) { core.add(i); grow = true; }
+    });
+  }
+  g.s.forEach((st, i) => {
+    if (i === main) return;
+    const f = info[i];
+    const others = g.s.filter((_, j) => j !== i && keep[j]);
+    if (!others.length) return;
+    const ox0 = Math.min(...info.filter((_, j) => j !== i && keep[j]).map((o) => o.x0));
+    const ox1 = Math.max(...info.filter((_, j) => j !== i && keep[j]).map((o) => o.x1));
+    const flat = f.y1 - f.y0 < xh * 0.1 && f.x1 - f.x0 > f.len * 0.85;
+    // выше 2,4 x-высоты не поднимается ни одна буква (кратка у Й — ниже): это подпись или линия соседней клетки
+    if (f.y0 > xh * 2.4) { keep[i] = false; return; }
+    // направляющая: ровная горизонталь на уровне печатной линии, далеко торчит за букву (перекладина Т — выше)
+    const onGuide = Math.abs(f.y0) < xh * 0.15 || f.y0 > xh * 1.9 || f.y1 < -xh * 0.3;
+    if (flat && onGuide && f.len > xh * 0.8 && (f.x0 < ox0 - xh * 0.5 || f.x1 > ox1 + xh * 0.5)) { keep[i] = false; return; }
+    if (HAS_MARKS.has(ch)) return;
+    // до основы буквы, а не до соседнего обрывка: два кусочка пунктира рядом друг друга не спасают
+    const d = core.has(i) ? 0 : Math.min(...[...core].map((j) => dist(st, g.s[j])));
+    if ((f.len < xh * 0.45 && d > xh * 0.25) || (flat && f.len < xh * 0.8 && d > xh * 0.3)) keep[i] = false;
+    // подпись клетки (серая буква в углу) — над прописными или под хвостами, отдельно от буквы
+    else if (f.len < xh * 1.2 && d > xh * 0.3 && (f.y0 > xh * 1.75 || f.y1 < -xh * 1.1)) keep[i] = false;
+  });
+  if (keep.every(Boolean)) return g;
+  const out: GlyphData = { ...g, s: g.s.filter((_, i) => keep[i]) };
+  if (g.oi !== undefined) {
+    if (!keep[g.oi]) delete out.oi;
+    else out.oi = keep.slice(0, g.oi).filter(Boolean).length;
+  }
+  // ширина буквы считалась вместе с мусором — без него буква уже, иначе в слове останется дыра
+  const ox0 = Math.min(...info.map((f) => f.x0)), ox1 = Math.max(...info.map((f) => f.x1));
+  const k = info.filter((_, i) => keep[i]);
+  const nx0 = Math.min(...k.map((f) => f.x0)), nx1 = Math.max(...k.map((f) => f.x1));
+  const dx = nx0 - ox0;
+  if (dx > 0.5 || ox1 - nx1 > 0.5) {
+    const r = (v: number) => Math.round(v * 10) / 10;
+    out.s = out.s.map((st) => st.map((v, j) => (j % 2 ? v : r(v - dx))));
+    out.w = r(Math.max(1, g.w - dx - (ox1 - nx1)));
+    if (out.i) out.i = [r(out.i[0] - dx), out.i[1]];
+    if (out.o) out.o = [r(out.o[0] - dx), out.o[1]];
+  }
+  return out;
+}
+
 function prepareGlyph(g: GlyphData, ch: string): GlyphData {
+  if (/\p{L}/u.test(ch)) g = dropBaselineSpecks(g, CUSTOM_X_HEIGHT);
+  if (/[\p{L}\p{N}]/u.test(ch)) g = dropStrays(g, CUSTOM_X_HEIGHT, ch);
   // у снятых с шаблона букв уже есть точки входа/выхода и порядок штрихов — их не трогаем
   if (g.i || g.o) return g;
-  const s = g.s.length > 1 ? mergeTouching(g.s, CUSTOM_X_HEIGHT * 0.1) : g.s;
+  // сначала касающиеся концы, потом разрывы до 0,22 x-высоты, если линия идёт дальше в ту же сторону
+  // (на фото направляющая «разрезает» штрих — так у «е» отрывался хвостик)
+  const s = g.s.length > 1 ? mergeTouching(mergeTouching(g.s, CUSTOM_X_HEIGHT * 0.1), CUSTOM_X_HEIGHT * 0.22, 0.6) : g.s;
   const m = s === g.s ? g : { ...g, s };
   return /\p{Ll}/u.test(ch) ? autoJoin(m, CUSTOM_X_HEIGHT) : m;
 }
+
+/**
+ * Запасной шрифт «от руки»: цифры и знаки ГОСТа рядом с живым почерком выглядят как напечатанные.
+ * Каждый знак получает 4 варианта с плавным изгибом и своей шириной — ровнее не бывает и у руки.
+ */
+const handCache = new Map<string, StrokeFont>();
+export function handFallback(base: StrokeFont): StrokeFont {
+  const hit = handCache.get(base.id);
+  if (hit) return hit;
+  const glyphs = new Map<string, GlyphData[]>();
+  for (const [ch, vs] of base.glyphs) {
+    if (!vs.length) continue;
+    const seed = [...ch].reduce((a, c) => a * 31 + c.codePointAt(0)!, 7);
+    glyphs.set(ch, [0, 1, 2, 3].map((k) => deformGlyph(vs[0], base.xHeight, seed * 5 + k, 1.8)));
+  }
+  // точка и запятая в чертёжном шрифте — крошечные: в «2,5» запятая пропадает. От руки они крупнее
+  const X = base.xHeight;
+  const dot = (cx: number, cy: number, r = 0.06) =>
+    [cx - r * X, cy, cx, cy + r * X, cx + r * X, cy, cx, cy - r * X, cx - r * X * 0.8, cy].map((v) => Math.round(v * 10) / 10);
+  const comma = (cx: number) => [cx + 0.04 * X, 0.08 * X, cx + 0.02 * X, -0.06 * X, cx - 0.08 * X, -0.32 * X].map((v) => Math.round(v * 10) / 10);
+  const P: Record<string, GlyphData> = {
+    ',': { w: 0.32 * X, s: [comma(0.16 * X)] },
+    '.': { w: 0.3 * X, s: [dot(0.13 * X, 0.05 * X)] },
+    '·': { w: 0.32 * X, s: [dot(0.16 * X, 0.48 * X)] },
+    ':': { w: 0.3 * X, s: [dot(0.13 * X, 0.05 * X), dot(0.13 * X, 0.72 * X)] },
+    ';': { w: 0.32 * X, s: [dot(0.16 * X, 0.72 * X), comma(0.16 * X)] },
+  };
+  for (const [ch, g] of Object.entries(P)) glyphs.set(ch, [g]);
+  const f: StrokeFont = { ...base, id: base.id + '-hand', glyphs };
+  handCache.set(base.id, f);
+  return f;
+}
+
+/** Латинские буквы, которые пишутся как русские: K₁, T₁, A, B… в формулах — своим почерком. */
+const LOOKALIKE: Record<string, string> = {
+  // прописные Т, Н, Р у руки часто с росчерками и в формуле не читаются — их берём из запасного шрифта
+  A: 'А', B: 'В', C: 'С', E: 'Е', K: 'К', M: 'М', O: 'О', X: 'Х',
+  a: 'а', c: 'с', e: 'е', o: 'о', p: 'р', x: 'х', y: 'у',
+};
 
 /** Пользовательский шрифт. Недостающие символы берутся из базового (масштабируются под xHeight). */
 export function fromCustom(rec: CustomFontRecord, all: StrokeFont[] = BUILTIN_FONTS): StrokeFont {
   const base = all.find((f) => f.id === rec.baseFontId) ?? BUILTIN_FONTS[0];
   const glyphs = new Map<string, GlyphData[]>();
-  for (const [ch, vs] of Object.entries(rec.glyphs)) if (vs.length) glyphs.set(ch, vs.map((g) => prepareGlyph(g, ch)));
+  for (const [ch, vs] of Object.entries(rec.glyphs)) if (vs.length) glyphs.set(ch, dropOutliers(vs.map((g) => prepareGlyph(g, ch))));
   // казахские буквы, ё и √ — достраиваем из своих же букв, чтобы стиль не смешивался
   const metrics = { xHeight: CUSTOM_X_HEIGHT, capHeight: CUSTOM_X_HEIGHT * (base.capHeight / base.xHeight), descender: CUSTOM_X_HEIGHT * (base.descender / base.xHeight) };
   synthesizeKazakh(glyphs, metrics);
+  for (const [lat, cyr] of Object.entries(LOOKALIKE)) if (!glyphs.has(lat) && glyphs.has(cyr)) glyphs.set(lat, glyphs.get(cyr)!);
   return {
     id: rec.id,
     name: rec.name,
@@ -155,7 +311,7 @@ export function fromCustom(rec: CustomFontRecord, all: StrokeFont[] = BUILTIN_FO
     letterSpacing: rec.letterSpacing,
     wordSpacing: rec.wordSpacing,
     glyphs,
-    fallback: base,
+    fallback: handFallback(base),
   };
 }
 

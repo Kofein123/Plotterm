@@ -1,7 +1,8 @@
 // Лекция из файла: разметка рисунков и таблиц, вёрстка, разбор PDF-строк, перевод картинки в линии.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BUILTIN_FONTS, autoJoin, mergeTouching, resolveGlyph } from '../src/fonts/fonts.ts';
+import { BUILTIN_FONTS, autoJoin, mergeTouching, resolveGlyph, dropBaselineSpecks, dropStrays } from '../src/fonts/fonts.ts';
+import { dropOutliers } from '../src/fonts/variants.ts';
 import { layoutText } from '../src/core/layout.ts';
 import { parseMarkup } from '../src/core/markup.ts';
 import { structure, imageBoxes, type TextItem } from '../src/io/document.ts';
@@ -113,6 +114,24 @@ test('разметка: заголовки ### и **жирный** из ChatGPT'
   assert.equal(p[1].chars.map((c) => c.ch).join(''), 'Текст важный');
 });
 
+test('формулы: дроби столбиком и корень с чертой, «и/или» остаётся текстом', () => {
+  const txt = (it: { ch: string }[]) => it.map((c) => c.ch).join('');
+  const p = parseMarkup('U(ω) = −2,5 / [ω(1 + 0,16ω²)], V = √(a + b)\nи/или 1/2');
+  if (p[0].kind !== 'text' || p[1].kind !== 'text') throw new Error('kind');
+  const f = p[0].chars.find((c) => c.frac)!;
+  assert.equal(txt(f.frac!.num), '2,5');
+  assert.equal(txt(f.frac!.den), 'ω(1 + 0,16ω²)');
+  // запятая после дроби — снаружи
+  assert.equal(p[0].chars[p[0].chars.indexOf(f) + 1].ch, ',');
+  const r = p[0].chars.find((c) => c.sqrt)!;
+  assert.equal(txt(r.sqrt!), 'a + b');
+  assert.ok(txt(p[1].chars).startsWith('и/или'));
+  assert.ok(p[1].chars.some((c) => c.frac));
+  // вёрстка: строка с дробью выше обычной, черта дроби есть
+  const L = layoutText({ text: 'U = 2,5/(1 + 0,16ω²)', font, typo, paper });
+  assert.ok(L.pages[0].strokes.length > 5);
+});
+
 test('картинка с компьютера: залитый круг рисуется контуром, тонкая линия — одной линией', () => {
   const W = 300, H = 200;
   const data = new Uint8Array(W * H).fill(255);
@@ -134,6 +153,18 @@ test('картинка с компьютера: залитый круг рису
   assert.ok(Math.max(...lp) - Math.min(...lp) < 60);
 });
 
+test('буква с фото: соринка у базовой линии убирается, разрыв по ходу линии склеивается', () => {
+  const e = { w: 90, s: [[10, 70, 40, 90, 30, 30, 39, 5], [55, 5, 55, -7], [58, 8, 89, 18]] };
+  const d = dropBaselineSpecks(e, 100);
+  assert.equal(d.s.length, 2);
+  // точка над «ё» и длинный хвост «ц» не трогаются
+  assert.equal(dropBaselineSpecks({ w: 50, s: [[0, 0, 0, 100], [20, 130, 22, 130]] }, 100).s.length, 2);
+  assert.equal(dropBaselineSpecks({ w: 50, s: [[0, 0, 0, 100], [40, 0, 45, -30]] }, 100).s.length, 2);
+  // разрыв 19 единиц по ходу — склеивается, поперёк — нет
+  assert.equal(mergeTouching([[0, 0, 40, 0], [59, 0, 90, 0]], 22, 0.6).length, 1);
+  assert.equal(mergeTouching([[0, 0, 40, 0], [40, 19, 40, 60]], 22, 0.6).length, 2);
+});
+
 test('склейка штрихов: два отрезка, сходящихся концами, становятся одним', () => {
   const m = mergeTouching([[0, 0, 50, 0], [50, 0, 100, 0], [0, 50, 0, 90]], 10);
   assert.equal(m.length, 2);
@@ -150,4 +181,22 @@ test('связка для .ttf: вход слева, выход справа в�
   // буква без подходящих концов не меняется
   const o = { w: 60, s: [[30, 50, 30, 60]] };
   assert.equal(autoJoin(o, 100), o);
+});
+
+test('обрывки линий и подписи клеток убираются из буквы, точки у й и ё остаются', () => {
+  const body = [0, 0, 20, 100, 40, 0];
+  const g = { w: 120, s: [body, [0, 164, 16, 164], [24, 164, 40, 164], [10, 300, 20, 330], [-60, 2, 110, 2]] };
+  const out = dropStrays(g, 100, 'а');
+  assert.equal(out.s.length, 1);
+  assert.ok(out.w < 60, `ширина без мусора: ${out.w}`);
+  const yo = { w: 40, s: [body, [5, 130, 6, 131], [30, 130, 31, 131]] };
+  assert.equal(dropStrays(yo, 100, 'ё').s.length, 3);
+});
+
+test('испорченный вариант буквы (чужой кусок, сдвиг) отбрасывается', () => {
+  const ok = (dx: number) => ({ w: 60, s: [[0, 0, 30 + dx, 100, 60, 0]] });
+  const shifted = { w: 60, s: [[0, -200, 30, -100, 60, -200]] };
+  const out = dropOutliers([ok(0), ok(3), ok(-2), shifted]);
+  assert.equal(out.length, 3);
+  assert.ok(!out.includes(shifted));
 });
