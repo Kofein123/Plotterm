@@ -1,5 +1,5 @@
 // Действия: подключение, калибровка, ручное управление, печать, тесты.
-import { app, gcodePlan } from './state.ts';
+import { app, gcodePlan, type Zone } from './state.ts';
 import { signal, effect, createRoot } from '../ui/reactive.ts';
 import { WebSerialTransport, serialApi, SPP_UUID, type SerialPortLike } from '../grbl/webserial.ts';
 import { SimulatorTransport } from '../grbl/simulator.ts';
@@ -342,6 +342,34 @@ export async function calibZero() {
   }
 }
 
+/** Размер бумаги в настройках ≠ откалиброванному листу больше чем на 1 мм. */
+export function paperMismatch(): boolean {
+  const f = app.frame.peek();
+  const p = app.paper.peek();
+  return f.ready && (Math.abs(p.width - f.width) > 1 || Math.abs(p.height - f.height) > 1);
+}
+
+/** Взять размер бумаги с откалиброванного листа. true — если что-то поменялось. */
+export function syncPaperToFrame(): boolean {
+  if (!paperMismatch()) return false;
+  const f = app.frame.peek();
+  const r = (v: number) => Math.round(v * 2) / 2;
+  app.paper.patch({ width: r(f.width), height: r(f.height) });
+  return true;
+}
+
+/** Обвести поля (область текста) поднятой ручкой — увидеть на настоящем листе, где будет текст. */
+export function traceMargins() {
+  const p = app.paper.peek();
+  if (!app.frame.peek().ready) return toast('Сначала шаги 2–3 калибровки.', 'warn');
+  const pg = app.layout.peek().pages[app.currentPage.peek()];
+  const mirrored = pg?.mirrored ?? p.side === 'left';
+  let l = mirrored ? p.marginRight : p.marginLeft, r = p.width - (mirrored ? p.marginLeft : p.marginRight);
+  let t = p.marginTop, b = p.height - p.marginBottom;
+  if (p.rotate180) [l, r, t, b] = [p.width - r, p.width - l, p.height - b, p.height - t];
+  return traceRect(l, t, r, b);
+}
+
 export function calibCorner() {
   const [x, y] = machine.wpos.peek();
   if (!calib.peek().zeroSet) {
@@ -354,7 +382,12 @@ export function calibCorner() {
   }
   calib.patch({ corner: [Math.round(x * 100) / 100, Math.round(y * 100) / 100], cornerSet: true, stale: false });
   const f = app.frame.peek();
-  toast(`Лист: ${f.width.toFixed(1)} × ${f.height.toFixed(1)} мм. Каретка больше не выйдет за эти границы.`, 'ok', 8000);
+  // поля в программе считаются от краёв листа из настроек «Бумага»; если он другого размера, чем настоящий,
+  // на предпросмотре всё в полях, а на бумаге текст уезжает за край — поэтому размер берём с калибровки
+  if (f.width < 100 || f.height < 100) {
+    toast(`Область ${f.width.toFixed(0)}×${f.height.toFixed(0)} мм — меньше листа. Край (шаг 3) ставится в ПРАВЫЙ НИЖНИЙ угол самого листа, а ноль (шаг 2) — точно в левый верхний: поля отсчитываются от этих точек.`, 'warn', 14000);
+  } else if (syncPaperToFrame()) toast(`Лист: ${f.width.toFixed(1)} × ${f.height.toFixed(1)} мм — размер бумаги в программе подстроен под настоящий лист, поля отсчитываются от его краёв.`, 'ok', 10000);
+  else toast(`Лист: ${f.width.toFixed(1)} × ${f.height.toFixed(1)} мм. Каретка больше не выйдет за эти границы.`, 'ok', 8000);
 }
 
 export function calibSkew() {
@@ -474,7 +507,12 @@ export async function writeSetting(key: number | string, value: string) {
 
 // --- печать ---
 
-export type PrintRange = { kind: 'all' } | { kind: 'current' } | { kind: 'from'; page: number } | { kind: 'lines'; from: number; to: number };
+export type PrintRange =
+  | { kind: 'all' }
+  | { kind: 'current' }
+  | { kind: 'from'; page: number }
+  | { kind: 'lines'; from: number; to: number }
+  | { kind: 'zone'; zone: Zone };
 
 export function printBlockers(): string[] {
   const out: string[] = [];
@@ -489,11 +527,11 @@ export function printBlockers(): string[] {
   return out;
 }
 
-export function buildJobPages(range: PrintRange, dry: boolean): JobPage[] {
+export function buildJobPages(range: PrintRange, dry: boolean, skipOutside = false): JobPage[] {
   const n = app.pageCount.peek();
   let idx: number[] = [];
   if (range.kind === 'all') idx = [...Array(n).keys()];
-  else if (range.kind === 'current' || range.kind === 'lines') idx = [Math.min(app.currentPage.peek(), n - 1)];
+  else if (range.kind === 'current' || range.kind === 'lines' || range.kind === 'zone') idx = [Math.min(app.currentPage.peek(), n - 1)];
   else idx = [...Array(n).keys()].filter((i) => i >= range.page);
   // на каждой странице сначала текст ручкой, потом рисунки карандашом (с паузой на смену и обратно)
   const out: JobPage[] = [];
@@ -501,8 +539,9 @@ export function buildJobPages(range: PrintRange, dry: boolean): JobPage[] {
   for (const i of idx) {
     // отдельные строки — только текст ручкой, без рисунков
     const lines: [number, number] | undefined = range.kind === 'lines' ? [range.from, range.to] : undefined;
-    const pen = app.planFor(i, { dryRun: dry, tool: 'pen', lines });
-    const pencil = lines ? null : app.planFor(i, { dryRun: dry, tool: 'pencil' });
+    const zone = range.kind === 'zone' ? range.zone : undefined;
+    const pen = app.planFor(i, { dryRun: dry, tool: 'pen', lines, zone, skipOutside });
+    const pencil = lines ? null : app.planFor(i, { dryRun: dry, tool: 'pencil', zone, skipOutside });
     const hasPen = !!pen && pen.strokes.length > 0;
     const hasPencil = !!pencil && pencil.strokes.length > 0;
     if (hasPen) {
@@ -528,12 +567,18 @@ export async function startPrint(range: PrintRange, fromStroke = 0) {
   if (blockers.length) return toast('Печать недоступна: ' + blockers.join('; '), 'warn');
   if (job.active) return;
   const dry = app.dryRun.peek();
-  const pages = buildJobPages(range, dry);
+  let pages = buildJobPages(range, dry);
   if (!pages.length) return toast('Нет страниц для печати.', 'warn');
-  const bad = pages.find((p) => p.plan.outOfBounds.length);
-  if (bad) {
-    app.currentPage.value = bad.pageNo;
-    return toast(`Страница ${bad.pageNo + 1}: часть текста выходит за лист (подсвечено красным). Уменьшите поля/шрифт или проверьте калибровку.`, 'err');
+  const bad = pages.filter((p) => p.plan.outOfBounds.length);
+  if (bad.length) {
+    // не запрещаем: показываем, где вылезло, и предлагаем напечатать то, что помещается
+    app.currentPage.value = bad[0].pageNo;
+    if (app.source.peek().kind === 'gcode') return toast('Готовый G-код выходит за край листа — проверьте калибровку или файл.', 'err');
+    const n = bad.reduce((a, p) => a + p.plan.outOfBounds.length, 0);
+    const where = bad.map((p) => p.pageNo + 1).join(', ');
+    if (!confirm(`${n} штрих(ов) на стр. ${where} выходят за край листа (подсвечены красным).\n\nНапечатать всё остальное, а то, что за краем, пропустить?\n«Отмена» — вернуться и поправить поля, шрифт или выбрать зону.`)) return;
+    pages = buildJobPages(range, dry, true).filter((p) => p.plan.strokes.length);
+    if (!pages.length) return toast('Внутри листа нечего печатать.', 'warn');
   }
   if (machine.state.peek() !== 'Idle') {
     try {

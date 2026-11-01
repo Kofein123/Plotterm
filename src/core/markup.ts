@@ -2,7 +2,8 @@
 //   строка «# Заголовок»   — заголовок по центру
 //   пустая строка          — пропуск строки
 //   строка «===»           — новая страница
-//   __текст__              — подчёркнуто
+//   __текст__              — подчёркнуто; **текст** — звёздочки убираются
+//   «## » / «### »          — тоже заголовок
 //   x^2, x^{10}, a_1, a_{ij} — степень и индекс
 //   \^ \_ \\               — сами символы
 //   | ячейка | ячейка |     — строка таблицы (соседние такие строки — одна таблица, рамку плоттер рисует сам)
@@ -53,7 +54,9 @@ export function parseMarkup(text: string): Paragraph[] {
     }
     let heading = false;
     let body = t;
-    if (body.startsWith('# ')) { heading = true; body = body.slice(2).trim(); }
+    // «# », «## », «### » из Markdown (так пишет ChatGPT) — всё заголовок
+    const hm = /^#{1,6}\s+/.exec(body);
+    if (hm) { heading = true; body = body.slice(hm[0].length).trim(); }
     out.push({ kind: 'text', heading, chars: parseInline(body) });
   }
   return out;
@@ -67,6 +70,11 @@ function parseInline(s: string): CharItem[] {
     const c = chars[i];
     if (c === '\\' && i + 1 < chars.length) {
       out.push({ ch: chars[++i], script: 0, underline });
+      continue;
+    }
+    // **жирный** из Markdown: плоттер пишет одной ручкой, звёздочки просто убираем
+    if (c === '*' && chars[i + 1] === '*') {
+      i++;
       continue;
     }
     if (c === '_' && chars[i + 1] === '_') {

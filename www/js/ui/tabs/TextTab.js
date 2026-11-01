@@ -2,8 +2,9 @@ import { h } from "../dom.js";
 import { app, SAMPLE_TEXT, saveImages } from "../../app/state.js";
 import { docxToDocument, missingImages, pdfToDocument } from "../../io/document.js";
 import { vectorize } from "../../io/vectorize.js";
+import { signal } from "../reactive.js";
 import { imageFileToGray } from "../../io/image.js";
-import { Btn, Icon, Note, Section } from "../components.js";
+import { Btn, Icon, Note, Section, Segmented } from "../components.js";
 import { readTextFile, svgToStrokes } from "../../io/importers.js";
 import { pickFile, toast, fmtTime } from "../../app/notify.js";
 async function importText() {
@@ -37,18 +38,54 @@ async function importText() {
 }
 /** Картинка (фото схемы, скриншот) → линии; в текст вставляется строка-рисунок. */
 async function insertPicture(insert) {
-    const f = await pickFile('image/*');
+    const f = await pickFile('image/*,.svg');
     if (!f)
         return;
     try {
         const g = await imageFileToGray(f, 1800);
-        const d = vectorize(g);
+        const d = vectorize(g, { mode: 'auto' });
         if (!d.paths.length)
             return toast('На картинке не нашлось линий.', 'warn');
         const id = 'r' + Date.now().toString(36);
         await saveImages([{ id, name: f.name, ...d }]);
         insert(`\n![](img:${id} 70%)\n`);
         toast(`Рисунок «${f.name}»: ${d.paths.length} линий. В строке можно поменять ширину (70 %) и добавить «карандаш» или «место».`, 'ok', 8000);
+    }
+    catch (e) {
+        toast('Не удалось открыть картинку: ' + (e?.message ?? e), 'err');
+    }
+}
+const picMode = signal('auto');
+/** последняя загруженная картинка — чтобы пересчитать её при смене режима без повторного выбора файла */
+let lastPic = null;
+/** Рисунок (доли ширины) → штрихи в мм, вписанные в поля листа, по центру сверху. */
+function placeDrawing(d) {
+    const p = app.paper.peek();
+    const maxW = p.width - p.marginLeft - p.marginRight, maxH = p.height - p.marginTop - p.marginBottom;
+    const k = Math.min(maxW, maxH / Math.max(0.01, d.aspect));
+    const left = p.marginLeft + (maxW - k) / 2;
+    return d.paths.map((pts) => ({ pts: pts.map((v, i) => (i % 2 === 0 ? left + v * k : p.marginTop + v * k)), line: 0 }));
+}
+function showPicture() {
+    if (!lastPic)
+        return;
+    const d = vectorize(lastPic.g, { mode: picMode.peek(), size: 1000 });
+    if (!d.paths.length)
+        return toast('На картинке не нашлось линий: попробуйте картинку контрастнее (тёмный рисунок на светлом фоне).', 'warn', 8000);
+    app.source.value = { kind: 'drawing', name: lastPic.name, strokes: placeDrawing(d) };
+    app.currentPage.value = 0;
+    return d.paths.length;
+}
+/** Обычная картинка (PNG, JPG, SVG…) → линии для ручки на весь лист. */
+export async function importPicture() {
+    const f = await pickFile('image/*,.svg');
+    if (!f)
+        return;
+    try {
+        lastPic = { name: f.name, g: await imageFileToGray(f, 2000) };
+        const n = showPicture();
+        if (n)
+            toast(`Картинка «${f.name}»: ${n} линий, вписана в поля. Если вышло не так — смените «Как рисовать» под кнопкой.`, 'ok', 8000);
     }
     catch (e) {
         toast('Не удалось открыть картинку: ' + (e?.message ?? e), 'err');
@@ -162,12 +199,24 @@ export function TextTab() {
                 h(Icon, { name: "trash", size: 14 }))))))) : (h("div", { class: "muted small" }, "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u0435 \u0448\u0440\u0438\u0444\u0442, \u0431\u0443\u043C\u0430\u0433\u0443, \u0440\u0443\u0447\u043A\u0443 \u0438 \u0441\u043A\u043E\u0440\u043E\u0441\u0442\u044C \u043E\u0434\u043D\u043E\u0439 \u043A\u043D\u043E\u043F\u043A\u043E\u0439 \u2014 \u043D\u0430\u043F\u0440\u0438\u043C\u0435\u0440 \u00AB\u0424\u0438\u0437\u0438\u043A\u0430, \u043A\u043B\u0435\u0442\u043A\u0430, 4 \u043C\u043C\u00BB \u2014 \u0438 \u0432\u044B\u0431\u0438\u0440\u0430\u0439\u0442\u0435 \u0432 \u043E\u0434\u0438\u043D \u043A\u043B\u0438\u043A."))),
         h(Section, { title: "\u0414\u0440\u0443\u0433\u043E\u0435 \u043D\u0430 \u043B\u0438\u0441\u0442" },
             h("div", { class: "row wrap" },
-                h(Btn, { small: true, onClick: () => importSvg() },
+                h(Btn, { small: true, kind: "primary", onClick: () => importPicture() },
                     h(Icon, { name: "upload", size: 14 }),
-                    " \u0420\u0438\u0441\u0443\u043D\u043E\u043A SVG"),
+                    " \u041A\u0430\u0440\u0442\u0438\u043D\u043A\u0430 (PNG, JPG, SVG)"),
+                h(Btn, { small: true, onClick: () => importSvg(), title: "\u0414\u043B\u044F \u0447\u0435\u0440\u0442\u0435\u0436\u0435\u0439, \u0433\u0434\u0435 SVG \u0443\u0436\u0435 \u043D\u0430\u0440\u0438\u0441\u043E\u0432\u0430\u043D \u043B\u0438\u043D\u0438\u044F\u043C\u0438: \u043B\u0438\u043D\u0438\u0438 \u0431\u0435\u0440\u0443\u0442\u0441\u044F \u043A\u0430\u043A \u0435\u0441\u0442\u044C" },
+                    h(Icon, { name: "upload", size: 14 }),
+                    " SVG-\u0447\u0435\u0440\u0442\u0451\u0436 \u043A\u0430\u043A \u0435\u0441\u0442\u044C"),
                 h(Btn, { small: true, onClick: () => importGcode() },
                     h(Icon, { name: "upload", size: 14 }),
                     " \u0413\u043E\u0442\u043E\u0432\u044B\u0439 G-\u043A\u043E\u0434"),
                 h(Btn, { small: true, kind: "ghost", onClick: () => { if (confirm('Вернуть пример текста?'))
-                        app.text.value = SAMPLE_TEXT; } }, "\u041F\u0440\u0438\u043C\u0435\u0440 \u0442\u0435\u043A\u0441\u0442\u0430")))));
+                        app.text.value = SAMPLE_TEXT; } }, "\u041F\u0440\u0438\u043C\u0435\u0440 \u0442\u0435\u043A\u0441\u0442\u0430")),
+            h("div", { class: "row wrap", style: "margin-top:6px" },
+                h("span", { class: "small muted" }, "\u041A\u0430\u043A \u0440\u0438\u0441\u043E\u0432\u0430\u0442\u044C \u043A\u0430\u0440\u0442\u0438\u043D\u043A\u0443:"),
+                h(Segmented, { small: true, value: () => picMode.value, onChange: (v) => { picMode.value = v; if (lastPic && app.source.peek().kind === 'drawing')
+                        showPicture(); }, options: [
+                        { value: 'auto', label: 'Авто' },
+                        { value: 'lines', label: 'Линиями' },
+                        { value: 'outline', label: 'Контуром' },
+                    ] })),
+            h("div", { class: "muted small" }, "\u00AB\u041B\u0438\u043D\u0438\u044F\u043C\u0438\u00BB \u2014 \u0434\u043B\u044F \u0441\u0445\u0435\u043C \u0438 \u0440\u0438\u0441\u0443\u043D\u043A\u043E\u0432 \u043B\u0438\u043D\u0438\u0435\u0439, \u00AB\u041A\u043E\u043D\u0442\u0443\u0440\u043E\u043C\u00BB \u2014 \u0434\u043B\u044F \u0437\u0430\u043B\u0438\u0442\u044B\u0445 \u0441\u0438\u043B\u0443\u044D\u0442\u043E\u0432 \u0438 \u0436\u0438\u0440\u043D\u044B\u0445 \u0431\u0443\u043A\u0432, \u00AB\u0410\u0432\u0442\u043E\u00BB \u0440\u0435\u0448\u0430\u0435\u0442 \u0434\u043B\u044F \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u043F\u044F\u0442\u043D\u0430. \u041A\u043E\u043D\u0432\u0435\u0440\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0432 SVG \u0437\u0430\u0440\u0430\u043D\u0435\u0435 \u043D\u0435 \u043D\u0443\u0436\u043D\u043E."))));
 }

@@ -5,13 +5,17 @@ import { app } from "../app/state.js";
 import { connectSerial, connectSimulator, disconnect, hasWebSerial, startPrint, printBlockers, resumeJob, unlock, traceJob, } from "../app/actions.js";
 import { Btn, Icon, Segmented, Toggle, Slider } from "./components.js";
 import { Jog } from "./Jog.js";
-import { fmtTime } from "../app/notify.js";
+import { fmtTime, toast } from "../app/notify.js";
 const range = signal('all');
 const fromPage = signal(1);
 const lineFrom = signal(1);
 const lineTo = signal(1);
 // номера строк показываем в предпросмотре, пока выбран режим «Строки»
-const syncLines = () => (app.printLines.value = range.peek() === 'lines' ? [lineFrom.peek(), Math.max(lineFrom.peek(), lineTo.peek())] : null);
+const syncLines = () => {
+    app.printLines.value = range.peek() === 'lines' ? [lineFrom.peek(), Math.max(lineFrom.peek(), lineTo.peek())] : null;
+    // «Зона»: на листе мышью/пальцем выделяется прямоугольник
+    app.zoneMode.value = range.peek() === 'zone';
+};
 const ovTarget = signal(100);
 let ovTimer;
 function rangeValue() {
@@ -20,6 +24,10 @@ function rangeValue() {
         return { kind: 'from', page: Math.max(0, fromPage.peek() - 1) };
     if (r === 'lines')
         return { kind: 'lines', from: lineFrom.peek(), to: Math.max(lineFrom.peek(), lineTo.peek()) };
+    if (r === 'zone') {
+        const z = app.printZone.peek();
+        return z ? { kind: 'zone', zone: z } : { kind: 'current' };
+    }
     return { kind: r };
 }
 function Connection() {
@@ -51,7 +59,11 @@ function PrintBlock() {
     const job = app.job;
     const blockers = () => printBlockers();
     return (h("div", { class: "card print" },
-        h("button", { class: "print-btn", disabled: () => blockers().length > 0, title: () => blockers().join('\n'), onClick: () => startPrint(rangeValue()) },
+        h("button", { class: "print-btn", disabled: () => blockers().length > 0, title: () => blockers().join('\n'), onClick: () => {
+                if (range.peek() === 'zone' && !app.printZone.peek())
+                    return toast('Выделите на листе зону для печати: потяните мышью или пальцем.', 'warn');
+                startPrint(rangeValue());
+            } },
             h(Icon, { name: "print", size: 26 }),
             h("span", null,
                 () => (app.dryRun.value ? 'СУХОЙ ПРОГОН' : 'ПЕЧАТЬ'),
@@ -65,12 +77,14 @@ function PrintBlock() {
             return b.length ? (h("ul", { class: "blockers" }, b.map((x) => h("li", null, x)))) : null;
         },
         h("div", { class: "print-opts" },
-            h(Segmented, { small: true, value: () => range.value, onChange: (v) => { range.value = v; syncLines(); }, options: [{ value: 'all', label: 'Все' }, { value: 'current', label: 'Текущую' }, { value: 'from', label: 'С стр.' }, { value: 'lines', label: 'Строки' }] }),
+            h(Segmented, { small: true, value: () => range.value, onChange: (v) => { range.value = v; syncLines(); }, options: [{ value: 'all', label: 'Все' }, { value: 'current', label: 'Текущую' }, { value: 'from', label: 'С стр.' }, { value: 'lines', label: 'Строки' }, { value: 'zone', label: 'Зона' }] }),
             () => range.value === 'from' ? (h("input", { class: "mini-num", type: "number", min: "1", value: () => String(fromPage.value), onChange: (e) => (fromPage.value = Math.max(1, parseInt(e.target.value) || 1)) })) : range.value === 'lines' ? (h("span", { class: "row", title: "\u041D\u043E\u043C\u0435\u0440\u0430 \u0441\u0442\u0440\u043E\u043A \u0432\u0438\u0434\u043D\u044B \u0441\u043B\u0435\u0432\u0430 \u043D\u0430 \u043B\u0438\u0441\u0442\u0435. \u041F\u0435\u0447\u0430\u0442\u0430\u0435\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u0442\u0435\u043A\u0441\u0442 \u044D\u0442\u0438\u0445 \u0441\u0442\u0440\u043E\u043A \u0442\u0435\u043A\u0443\u0449\u0435\u0439 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u044B, \u043D\u0430 \u0441\u0432\u043E\u0451\u043C \u043C\u0435\u0441\u0442\u0435" },
                 h("span", { class: "small" }, "\u0441"),
                 h("input", { class: "mini-num", type: "number", min: "1", value: () => String(lineFrom.value), onChange: (e) => { lineFrom.value = Math.max(1, parseInt(e.target.value) || 1); syncLines(); } }),
                 h("span", { class: "small" }, "\u043F\u043E"),
-                h("input", { class: "mini-num", type: "number", min: "1", value: () => String(lineTo.value), onChange: (e) => { lineTo.value = Math.max(1, parseInt(e.target.value) || 1); syncLines(); } }))) : null),
+                h("input", { class: "mini-num", type: "number", min: "1", value: () => String(lineTo.value), onChange: (e) => { lineTo.value = Math.max(1, parseInt(e.target.value) || 1); syncLines(); } }))) : range.value === 'zone' ? (h("span", { class: "row" },
+                h("span", { class: "small muted" }, () => (app.printZone.value ? 'печатается только выделенное' : 'выделите на листе')),
+                () => (app.printZone.value ? h(Btn, { small: true, kind: "ghost", onClick: () => (app.printZone.value = null) }, "\u0421\u0431\u0440\u043E\u0441\u0438\u0442\u044C") : null))) : null),
         h("div", { class: "print-opts" },
             h(Toggle, { value: () => app.dryRun.value, onChange: (v) => (app.dryRun.value = v), label: "\u0421\u0443\u0445\u043E\u0439 \u043F\u0440\u043E\u0433\u043E\u043D", hint: "\u041F\u0440\u043E\u0439\u0442\u0438 \u0432\u0441\u0451 \u0437\u0430\u0434\u0430\u043D\u0438\u0435 \u0441 \u043F\u043E\u0434\u043D\u044F\u0442\u043E\u0439 \u0440\u0443\u0447\u043A\u043E\u0439 \u2014 \u043F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u0440\u0430\u0437\u043C\u0435\u0449\u0435\u043D\u0438\u0435" }),
             h(Btn, { small: true, kind: "ghost", onClick: () => traceJob(), disabled: () => app.machine.conn.value !== 'connected' || job.active, title: "\u041E\u0431\u0432\u0435\u0441\u0442\u0438 \u0440\u0430\u043C\u043A\u0443 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u043E\u0434\u043D\u044F\u0442\u043E\u0439 \u0440\u0443\u0447\u043A\u043E\u0439" },

@@ -77,6 +77,9 @@ export const app = createRoot(() => {
     const dryRun = signal(false);
     /** печатать только строки текста с a по b текущей страницы (номера как в предпросмотре), null — всё */
     const printLines = signal(null);
+    /** режим «Зона»: выделение прямоугольника на листе (мм, как на предпросмотре); null — ещё не выделено */
+    const zoneMode = signal(false);
+    const printZone = signal(null);
     /** страницы для печати/предпросмотра в текущем режиме */
     const pageStrokes = computed(() => {
         const src = source.value;
@@ -104,6 +107,17 @@ export const app = createRoot(() => {
             strokes = strokes.filter((s) => keep.has(s.line));
         }
         const p = paper.peek();
+        if (opts.zone) {
+            const z = opts.zone;
+            strokes = strokes.filter((s) => {
+                let [u, v] = strokeCenter(s.pts);
+                if (p.rotate180) {
+                    u = p.width - u;
+                    v = p.height - v;
+                }
+                return inZone(z, u, v);
+            });
+        }
         const f = frame.peek();
         const fr = f.ready ? f : { ...f, width: p.width, height: p.height };
         return buildPlan({
@@ -120,6 +134,7 @@ export const app = createRoot(() => {
             reorder: true,
             title: src.kind === 'drawing' ? src.name : `страница ${pageIdx + 1}`,
             timeFactor: prefs.peek().timeFactor,
+            skipOutside: opts.skipOutside,
         });
     }
     /** план текущей страницы для предпросмотра (порядок, холостые ходы, границы, время) */
@@ -182,9 +197,21 @@ export const app = createRoot(() => {
     return {
         text, typo, paper, pen, speed, calib, prefs, stats, profiles, source,
         customFonts, fonts, font, frame, images, layout, machine, limits, currentPage, dryRun,
-        pageStrokes, pageCount, planFor, previewPlan, printLines, totalEstimate, job, isPenDown,
+        pageStrokes, pageCount, planFor, previewPlan, printLines, zoneMode, printZone, totalEstimate, job, isPenDown,
     };
 });
+/** Центр рамки штриха — по нему решается, попал ли штрих в зону (буква не режется пополам). */
+export function strokeCenter(pts) {
+    let minU = Infinity, minV = Infinity, maxU = -Infinity, maxV = -Infinity;
+    for (let i = 0; i < pts.length; i += 2) {
+        minU = Math.min(minU, pts[i]);
+        maxU = Math.max(maxU, pts[i]);
+        minV = Math.min(minV, pts[i + 1]);
+        maxV = Math.max(maxV, pts[i + 1]);
+    }
+    return [(minU + maxU) / 2, (minV + maxV) / 2];
+}
+export const inZone = (z, u, v) => u >= z[0] && u <= z[2] && v >= z[1] && v <= z[3];
 /** План для чужого G-кода: штрихи только для предпросмотра. */
 /** Номера строк текста на странице по порядку: строка k (с 1) — это textLines(...)[k - 1]. Рисунки и таблицы (line 0) не считаются. */
 export function textLines(strokes) {

@@ -17,7 +17,14 @@ export interface VectorizeOptions {
   contrast?: number;
   /** штрихи короче этой доли ширины отбрасываются */
   minLen?: number;
+  /**
+   * lines — по средней линии (схемы, рисунки линиями); outline — по контуру залитых мест (силуэты, жирные буквы);
+   * auto — каждое пятно отдельно: тонкое — линией, толстое — контуром
+   */
+  mode?: VectorMode;
 }
+
+export type VectorMode = 'auto' | 'lines' | 'outline';
 
 function resize(g: Gray, maxSide: number): Gray {
   const k = Math.min(1, maxSide / Math.max(g.w, g.h));
@@ -68,6 +75,79 @@ export function binarize(g: Gray, contrast = 0.14): Uint8Array {
   return out;
 }
 
+/** Порог Оцу по гистограмме яркости. */
+export function otsu(data: Uint8Array): number {
+  const hist = new Float64Array(256);
+  for (let i = 0; i < data.length; i++) hist[data[i]]++;
+  const n = data.length;
+  let sumAll = 0;
+  for (let i = 0; i < 256; i++) sumAll += i * hist[i];
+  let wB = 0, sumB = 0, best = 0, th = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (!wB) continue;
+    const wF = n - wB;
+    if (!wF) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB, mF = (sumAll - sumB) / wF;
+    const v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > best) { best = v; th = t; }
+  }
+  return th;
+}
+
+/**
+ * Картинка «с компьютера» (рисунок, скриншот, значок): ровный белый фон, почти нет полутонов.
+ * Для неё порог общий — иначе середина больших залитых мест не считается чернилами (она не темнее соседей).
+ */
+export function isCleanImage(g: Gray): boolean {
+  let white = 0, mid = 0;
+  for (let i = 0; i < g.data.length; i++) {
+    const v = g.data[i];
+    if (v >= 225) white++;
+    else if (v > 70 && v < 190) mid++;
+  }
+  return white / g.data.length > 0.3 && mid / g.data.length < 0.12;
+}
+
+function binarizeGlobal(g: Gray): Uint8Array {
+  const th = Math.min(200, Math.max(60, otsu(g.data)));
+  const out = new Uint8Array(g.data.length);
+  for (let i = 0; i < out.length; i++) if (g.data[i] < th) out[i] = 1;
+  return out;
+}
+
+/** Связные пятна (8 соседей): номер пятна для каждого пикселя, 0 — фон. */
+function label(bin: Uint8Array, W: number, H: number): { lab: Int32Array; count: number } {
+  const lab = new Int32Array(W * H);
+  const stack: number[] = [];
+  let count = 0;
+  for (let i = 0; i < bin.length; i++) {
+    if (!bin[i] || lab[i]) continue;
+    count++;
+    lab[i] = count;
+    stack.push(i);
+    while (stack.length) {
+      const c = stack.pop()!;
+      const x = c % W, y = (c / W) | 0;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+          const n = ny * W + nx;
+          if (bin[n] && !lab[n]) { lab[n] = count; stack.push(n); }
+        }
+    }
+  }
+  return { lab, count };
+}
+
+/** Край пятна: пиксель чернил, у которого сверху/снизу/слева/справа фон. */
+function isEdge(bin: Uint8Array, W: number, H: number, i: number): boolean {
+  const x = i % W, y = (i / W) | 0;
+  return x === 0 || y === 0 || x === W - 1 || y === H - 1 || !bin[i - 1] || !bin[i + 1] || !bin[i - W] || !bin[i + W];
+}
+
 function removeSpecks(bin: Uint8Array, W: number, H: number, minArea: number) {
   const seen = new Uint8Array(W * H);
   const stack: number[] = [];
@@ -101,9 +181,28 @@ function length(p: number[]) {
 export function vectorize(g: Gray, opts: VectorizeOptions = {}): VectorDrawing {
   const img = resize(g, opts.size ?? 900);
   const { w: W, h: H } = img;
-  const bin = binarize(img, opts.contrast ?? 0.14);
+  const bin = isCleanImage(img) ? binarizeGlobal(img) : binarize(img, opts.contrast ?? 0.14);
   removeSpecks(bin, W, H, Math.max(6, Math.round((W * H) / 40000)));
-  thin(bin, W, H);
+  const mode = opts.mode ?? 'lines';
+  if (mode === 'lines') thin(bin, W, H);
+  else {
+    // скелет — для тонких пятен, контур — для толстых (средняя линия залитого круга — это точка, а не круг)
+    const skel = bin.slice();
+    thin(skel, W, H);
+    const { lab, count } = label(bin, W, H);
+    const area = new Float64Array(count + 1), sk = new Float64Array(count + 1);
+    for (let i = 0; i < bin.length; i++) if (lab[i]) { area[lab[i]]++; if (skel[i]) sk[lab[i]]++; }
+    const thick = Math.max(5, W / 120);
+    const outline = (k: number) => mode === 'outline' || area[k] / Math.max(1, sk[k]) > thick;
+    const res = new Uint8Array(W * H);
+    for (let i = 0; i < bin.length; i++) {
+      const k = lab[i];
+      if (!k) continue;
+      if (outline(k) ? isEdge(bin, W, H, i) : skel[i]) res[i] = 1;
+    }
+    thin(res, W, H);
+    bin.set(res);
+  }
   pruneStairs(bin, W, H);
   const raw = trace(bin, W, H, Math.max(3, W / 150));
   const minLen = (opts.minLen ?? 0.012) * W;

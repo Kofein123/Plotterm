@@ -7,14 +7,18 @@ import {
 } from '../app/actions.ts';
 import { Btn, Icon, Segmented, Toggle, Slider } from './components.tsx';
 import { Jog } from './Jog.tsx';
-import { fmtTime } from '../app/notify.ts';
+import { fmtTime, toast } from '../app/notify.ts';
 
-const range = signal<'all' | 'current' | 'from' | 'lines'>('all');
+const range = signal<'all' | 'current' | 'from' | 'lines' | 'zone'>('all');
 const fromPage = signal(1);
 const lineFrom = signal(1);
 const lineTo = signal(1);
 // номера строк показываем в предпросмотре, пока выбран режим «Строки»
-const syncLines = () => (app.printLines.value = range.peek() === 'lines' ? [lineFrom.peek(), Math.max(lineFrom.peek(), lineTo.peek())] : null);
+const syncLines = () => {
+  app.printLines.value = range.peek() === 'lines' ? [lineFrom.peek(), Math.max(lineFrom.peek(), lineTo.peek())] : null;
+  // «Зона»: на листе мышью/пальцем выделяется прямоугольник
+  app.zoneMode.value = range.peek() === 'zone';
+};
 const ovTarget = signal(100);
 let ovTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -22,6 +26,10 @@ function rangeValue(): PrintRange {
   const r = range.peek();
   if (r === 'from') return { kind: 'from', page: Math.max(0, fromPage.peek() - 1) };
   if (r === 'lines') return { kind: 'lines', from: lineFrom.peek(), to: Math.max(lineFrom.peek(), lineTo.peek()) };
+  if (r === 'zone') {
+    const z = app.printZone.peek();
+    return z ? { kind: 'zone', zone: z } : { kind: 'current' };
+  }
   return { kind: r };
 }
 
@@ -75,7 +83,10 @@ function PrintBlock() {
         class="print-btn"
         disabled={() => blockers().length > 0}
         title={() => blockers().join('\n')}
-        onClick={() => startPrint(rangeValue())}
+        onClick={() => {
+          if (range.peek() === 'zone' && !app.printZone.peek()) return toast('Выделите на листе зону для печати: потяните мышью или пальцем.', 'warn');
+          startPrint(rangeValue());
+        }}
       >
         <Icon name="print" size={26} />
         <span>
@@ -102,7 +113,7 @@ function PrintBlock() {
           small
           value={() => range.value}
           onChange={(v) => { range.value = v; syncLines(); }}
-          options={[{ value: 'all', label: 'Все' }, { value: 'current', label: 'Текущую' }, { value: 'from', label: 'С стр.' }, { value: 'lines', label: 'Строки' }]}
+          options={[{ value: 'all', label: 'Все' }, { value: 'current', label: 'Текущую' }, { value: 'from', label: 'С стр.' }, { value: 'lines', label: 'Строки' }, { value: 'zone', label: 'Зона' }]}
         />
         {() =>
           range.value === 'from' ? (
@@ -113,6 +124,11 @@ function PrintBlock() {
               <input class="mini-num" type="number" min="1" value={() => String(lineFrom.value)} onChange={(e: Event) => { lineFrom.value = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); syncLines(); }} />
               <span class="small">по</span>
               <input class="mini-num" type="number" min="1" value={() => String(lineTo.value)} onChange={(e: Event) => { lineTo.value = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); syncLines(); }} />
+            </span>
+          ) : range.value === 'zone' ? (
+            <span class="row">
+              <span class="small muted">{() => (app.printZone.value ? 'печатается только выделенное' : 'выделите на листе')}</span>
+              {() => (app.printZone.value ? <Btn small kind="ghost" onClick={() => (app.printZone.value = null)}>Сбросить</Btn> : null)}
             </span>
           ) : null
         }

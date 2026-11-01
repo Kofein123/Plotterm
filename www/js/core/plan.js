@@ -82,7 +82,7 @@ export function buildPlan(inp) {
         .filter((s) => s.pts.length >= 4);
     // 2. порядок и склейка
     const ordered = orderStrokes(prepared, inp.reorder);
-    const joined = [];
+    let joined = [];
     for (const s of ordered) {
         const last = joined[joined.length - 1];
         if (last && speed.joinTolerance > 0) {
@@ -95,7 +95,7 @@ export function buildPlan(inp) {
         joined.push({ pts: s.pts.slice(), line: s.line });
     }
     // 3. проверка границ листа
-    const outOfBounds = [];
+    let outOfBounds = [];
     const tol = 0.3;
     joined.forEach((s, i) => {
         for (let j = 0; j < s.pts.length; j += 2) {
@@ -106,6 +106,13 @@ export function buildPlan(inp) {
             }
         }
     });
+    let skipped = 0;
+    if (inp.skipOutside && outOfBounds.length) {
+        const out = new Set(outOfBounds);
+        joined = joined.filter((_, i) => !out.has(i));
+        skipped = out.size;
+        outOfBounds = [];
+    }
     // 4. G-код
     const z = penZ(inp.calib, pen.pressure);
     const feed = Math.min(feedOf(speed), limits.rapid);
@@ -266,6 +273,7 @@ export function buildPlan(inp) {
         strokeStart,
         lineStroke: Int32Array.from(lineStrokeArr),
         outOfBounds,
+        skipped,
         drawLength,
         travelLength,
         penLifts: joined.length,
