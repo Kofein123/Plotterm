@@ -66,7 +66,10 @@ export function parseMarkup(text: string): Paragraph[] {
     // «# », «## », «### » из Markdown (так пишет ChatGPT) — всё заголовок
     const hm = /^#{1,6}\s+/.exec(body);
     if (hm) { heading = true; body = body.slice(hm[0].length).trim(); }
-    out.push({ kind: 'text', heading, chars: parseInline(body) });
+    const chars = parseInline(body);
+    // заголовок от руки подчёркивают — так на тетрадной странице его видно сразу
+    if (hm) for (const c of chars) c.underline = true;
+    out.push({ kind: 'text', heading, chars });
   }
   return out;
 }
