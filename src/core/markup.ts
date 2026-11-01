@@ -15,7 +15,16 @@ export interface CharItem {
   /** 0 — обычный, 1 — верхний индекс, -1 — нижний */
   script: 0 | 1 | -1;
   underline: boolean;
+  /** экранированный символ (\/) — не участвует в формулах */
+  lit?: boolean;
+  /** дробь столбиком: числитель над чертой, знаменатель под ней */
+  frac?: { num: CharItem[]; den: CharItem[] };
+  /** корень с чертой над подкоренным выражением */
+  sqrt?: CharItem[];
 }
+
+/** Символ-заглушка для дроби (не буква: не переносится и не ищется в шрифте). */
+export const FRAC_CH = '\uE000';
 
 export type ImageTool = 'pen' | 'pencil' | 'space';
 
@@ -63,13 +72,17 @@ export function parseMarkup(text: string): Paragraph[] {
 }
 
 function parseInline(s: string): CharItem[] {
+  return mathify(parseChars(s), s.includes('='));
+}
+
+function parseChars(s: string): CharItem[] {
   const out: CharItem[] = [];
   const chars = [...s];
   let underline = false;
   for (let i = 0; i < chars.length; i++) {
     const c = chars[i];
     if (c === '\\' && i + 1 < chars.length) {
-      out.push({ ch: chars[++i], script: 0, underline });
+      out.push({ ch: chars[++i], script: 0, underline, lit: true });
       continue;
     }
     // **жирный** из Markdown: плоттер пишет одной ручкой, звёздочки просто убираем
@@ -99,4 +112,97 @@ function parseInline(s: string): CharItem[] {
     out.push({ ch: c, script: 0, underline });
   }
   return out;
+}
+
+// --- формулы от руки: дроби столбиком и корни с чертой ---
+// В строке с «=» запись a/b, (…)/(…), 2,5/[ω(1 + 0,4ω)] пишется дробью; в обычном тексте — только если
+// с обеих сторон числа (1/2), чтобы «и/или» осталось как есть. «\/» — всегда просто косая черта.
+
+type Node = { t: 'c'; it: CharItem } | { t: 'g'; open: CharItem; close: CharItem; kids: Node[] } | { t: 'x'; it: CharItem };
+
+const OPEN: Record<string, string> = { '(': ')', '[': ']' };
+const STOP = new Set([' ', '=', '+', '−', '-', '–', '—', ';', '<', '>', '≈', '≠', '≤', '≥', '→', '←', '±', ':', '/', '|']);
+
+function toTree(items: CharItem[]): Node[] {
+  const root: Node[] = [];
+  const stack: { kids: Node[]; open: CharItem }[] = [];
+  const cur = () => (stack.length ? stack[stack.length - 1].kids : root);
+  for (const it of items) {
+    if (!it.script && !it.lit && OPEN[it.ch]) { stack.push({ kids: [], open: it }); continue; }
+    const top = stack[stack.length - 1];
+    if (top && !it.script && !it.lit && it.ch === OPEN[top.open.ch]) {
+      stack.pop();
+      cur().push({ t: 'g', open: top.open, close: it, kids: top.kids });
+      continue;
+    }
+    cur().push({ t: 'c', it });
+  }
+  // незакрытые скобки — обычные символы
+  while (stack.length) {
+    const top = stack.pop()!;
+    cur().push({ t: 'c', it: top.open }, ...top.kids);
+  }
+  return root;
+}
+
+const isAtom = (n: Node) => n.t !== 'c' || n.it.script !== 0 || n.it.lit || !STOP.has(n.it.ch);
+const hasDigit = (ns: Node[]): boolean => ns.some((n) => (n.t === 'c' ? /\d/.test(n.it.ch) : n.t === 'g' ? hasDigit(n.kids) : true));
+const isSpace = (n: Node) => n.t === 'c' && n.it.ch === ' ' && !n.it.script;
+
+function flatten(ns: Node[]): CharItem[] {
+  const out: CharItem[] = [];
+  for (const n of ns) {
+    if (n.t === 'g') out.push(n.open, ...flatten(n.kids), n.close);
+    else out.push(n.it);
+  }
+  return out;
+}
+
+/** Операнд дроби: одна группа в скобках — без скобок. */
+function operand(ns: Node[], math: boolean): CharItem[] {
+  const inner = ns.length === 1 && ns[0].t === 'g' ? ns[0].kids : ns;
+  return flatten(transform(inner, math));
+}
+
+function transform(ns: Node[], math: boolean): Node[] {
+  // внутри скобок — то же самое
+  let out: Node[] = ns.map((n) => (n.t === 'g' ? { ...n, kids: transform(n.kids, math) } : n));
+  // √(…) и √[…] — корень с чертой
+  const r: Node[] = [];
+  for (let i = 0; i < out.length; i++) {
+    const n = out[i], nx = out[i + 1];
+    if (n.t === 'c' && n.it.ch === '√' && !n.it.lit && nx && nx.t === 'g') {
+      r.push({ t: 'x', it: { ch: '√', script: n.it.script, underline: n.it.underline, sqrt: flatten(nx.kids) } });
+      i++;
+    } else r.push(n);
+  }
+  out = r;
+  // дроби
+  for (let i = 0; i < out.length; i++) {
+    const n = out[i];
+    if (n.t !== 'c' || n.it.ch !== '/' || n.it.lit || n.it.script) continue;
+    let a = i - 1;
+    while (a >= 0 && isSpace(out[a])) a--;
+    let L = a;
+    while (L >= 0 && isAtom(out[L])) L--;
+    L++;
+    let b = i + 1;
+    while (b < out.length && isSpace(out[b])) b++;
+    let R = b;
+    while (R < out.length && isAtom(out[R])) R++;
+    // запятая или точка в конце — знак препинания после дроби, а не её часть
+    while (R - 1 > b && out[R - 1].t === 'c' && /[,.;]/.test((out[R - 1] as { it: CharItem }).it.ch)) R--;
+    const num = out.slice(L, a + 1), den = out.slice(b, R);
+    if (!num.length || !den.length) continue;
+    if (!math && !(hasDigit(num) && hasDigit(den))) continue;
+    const frac: Node = { t: 'x', it: { ch: FRAC_CH, script: 0, underline: n.it.underline, frac: { num: operand(num, math), den: operand(den, math) } } };
+    out.splice(L, R - L, frac);
+    i = L;
+  }
+  return out;
+}
+
+function mathify(items: CharItem[], math: boolean): CharItem[] {
+  if (!items.some((it) => (it.ch === '/' || it.ch === '√') && !it.lit)) return items;
+  return flatten(transform(toTree(items), math));
 }

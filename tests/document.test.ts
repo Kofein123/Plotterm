@@ -113,6 +113,24 @@ test('разметка: заголовки ### и **жирный** из ChatGPT'
   assert.equal(p[1].chars.map((c) => c.ch).join(''), 'Текст важный');
 });
 
+test('формулы: дроби столбиком и корень с чертой, «и/или» остаётся текстом', () => {
+  const txt = (it: { ch: string }[]) => it.map((c) => c.ch).join('');
+  const p = parseMarkup('U(ω) = −2,5 / [ω(1 + 0,16ω²)], V = √(a + b)\nи/или 1/2');
+  if (p[0].kind !== 'text' || p[1].kind !== 'text') throw new Error('kind');
+  const f = p[0].chars.find((c) => c.frac)!;
+  assert.equal(txt(f.frac!.num), '2,5');
+  assert.equal(txt(f.frac!.den), 'ω(1 + 0,16ω²)');
+  // запятая после дроби — снаружи
+  assert.equal(p[0].chars[p[0].chars.indexOf(f) + 1].ch, ',');
+  const r = p[0].chars.find((c) => c.sqrt)!;
+  assert.equal(txt(r.sqrt!), 'a + b');
+  assert.ok(txt(p[1].chars).startsWith('и/или'));
+  assert.ok(p[1].chars.some((c) => c.frac));
+  // вёрстка: строка с дробью выше обычной, черта дроби есть
+  const L = layoutText({ text: 'U = 2,5/(1 + 0,16ω²)', font, typo, paper });
+  assert.ok(L.pages[0].strokes.length > 5);
+});
+
 test('картинка с компьютера: залитый круг рисуется контуром, тонкая линия — одной линией', () => {
   const W = 300, H = 200;
   const data = new Uint8Array(W * H).fill(255);

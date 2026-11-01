@@ -180,7 +180,8 @@ export function TextTab() {
           <button class="chip" title="Заголовок по центру" onClick={() => insert('# ')}># Заголовок</button>
           <button class="chip" title="Степень" onClick={() => insert('^{}')}>x²</button>
           <button class="chip" title="Индекс" onClick={() => insert('_{}')}>x₁</button>
-          <button class="chip" title="Корень" onClick={() => insert('√')}>√</button>
+          <button class="chip" title="Корень с чертой: √(…)" onClick={() => insert('√()')}>√</button>
+          <button class="chip" title="Дробь столбиком: (числитель)/(знаменатель). В строке с «=» любая a/b пишется дробью; «\/» — просто косая черта" onClick={() => insert('()/()')}>a/b</button>
           <button class="chip" title="Подчеркнуть" onClick={() => insert('____')}>подчеркнуть</button>
           <button class="chip" title="Новая страница" onClick={() => insert('\n===\n')}>новая стр.</button>
           <button class="chip" title="Рисунок из фото или картинки: плоттер нарисует его линиями" onClick={() => insertPicture(insert)}>+ рисунок</button>
