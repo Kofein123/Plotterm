@@ -1,7 +1,7 @@
 // Лекция из файла: разметка рисунков и таблиц, вёрстка, разбор PDF-строк, перевод картинки в линии.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BUILTIN_FONTS, autoJoin, mergeTouching, resolveGlyph } from '../src/fonts/fonts.ts';
+import { BUILTIN_FONTS, autoJoin, mergeTouching, resolveGlyph, dropBaselineSpecks } from '../src/fonts/fonts.ts';
 import { layoutText } from '../src/core/layout.ts';
 import { parseMarkup } from '../src/core/markup.ts';
 import { structure, imageBoxes, type TextItem } from '../src/io/document.ts';
@@ -132,6 +132,18 @@ test('картинка с компьютера: залитый круг рису
   const lines = vectorize({ w: W, h: H, data }, { mode: 'lines' });
   const lp = lines.paths.flatMap((p) => p.filter((_, i) => i % 2 === 0).map((v) => v * W)).filter((x) => x < 160);
   assert.ok(Math.max(...lp) - Math.min(...lp) < 60);
+});
+
+test('буква с фото: соринка у базовой линии убирается, разрыв по ходу линии склеивается', () => {
+  const e = { w: 90, s: [[10, 70, 40, 90, 30, 30, 39, 5], [55, 5, 55, -7], [58, 8, 89, 18]] };
+  const d = dropBaselineSpecks(e, 100);
+  assert.equal(d.s.length, 2);
+  // точка над «ё» и длинный хвост «ц» не трогаются
+  assert.equal(dropBaselineSpecks({ w: 50, s: [[0, 0, 0, 100], [20, 130, 22, 130]] }, 100).s.length, 2);
+  assert.equal(dropBaselineSpecks({ w: 50, s: [[0, 0, 0, 100], [40, 0, 45, -30]] }, 100).s.length, 2);
+  // разрыв 19 единиц по ходу — склеивается, поперёк — нет
+  assert.equal(mergeTouching([[0, 0, 40, 0], [59, 0, 90, 0]], 22, 0.6).length, 1);
+  assert.equal(mergeTouching([[0, 0, 40, 0], [40, 19, 40, 60]], 22, 0.6).length, 2);
 });
 
 test('склейка штрихов: два отрезка, сходящихся концами, становятся одним', () => {
