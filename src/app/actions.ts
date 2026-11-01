@@ -1,11 +1,13 @@
 // Действия: подключение, калибровка, ручное управление, печать, тесты.
-import { app } from './state.ts';
+import { app, gcodePlan, type Zone } from './state.ts';
 import { signal, effect, createRoot } from '../ui/reactive.ts';
 import { WebSerialTransport, serialApi, SPP_UUID, type SerialPortLike } from '../grbl/webserial.ts';
 import { SimulatorTransport } from '../grbl/simulator.ts';
 import { paperToWork, workToPaper, penZ } from '../core/calibration.ts';
 import { buildPlan, fmt, type Plan } from '../core/plan.ts';
 import { layoutText } from '../core/layout.ts';
+import { backlashTestGcode } from '../core/backlash.ts';
+import { BUILTIN_FONTS } from '../fonts/fonts.ts';
 import type { Stroke } from '../core/types.ts';
 import type { JobPage } from '../grbl/job.ts';
 import { toast, beep, systemNotify, keepAwake, askNotifications, downloadText, stamp, fmtTime } from './notify.ts';
@@ -215,8 +217,9 @@ export async function jogStep(du: number, dv: number) {
       const [x, y] = paperToWork(f, tu, tv);
       await machine.jogTo(x, y, null, feed);
     } else {
-      // до калибровки: ←→ = X, ↑↓ = Y станка
-      await machine.jog(du, -dv, 0, feed);
+      // до калибровки: по осям станка, но в тех же направлениях, что и метка на превью
+      const [x, y] = paperToWork(app.frame.peek(), du, dv);
+      await machine.jog(x, y, 0, feed);
     }
   } catch (e) {
     jogError(e);
@@ -236,7 +239,8 @@ export async function jogContinuousStart(du: number, dv: number) {
       const [x, y] = paperToWork(f, tu, tv);
       await machine.jogTo(x, y, null, feed);
     } else {
-      await machine.jog(du * 300, -dv * 300, 0, feed);
+      const [x, y] = paperToWork(app.frame.peek(), du * 300, dv * 300);
+      await machine.jog(x, y, 0, feed);
     }
   } catch (e) {
     jogError(e);
@@ -338,6 +342,34 @@ export async function calibZero() {
   }
 }
 
+/** Размер бумаги в настройках ≠ откалиброванному листу больше чем на 1 мм. */
+export function paperMismatch(): boolean {
+  const f = app.frame.peek();
+  const p = app.paper.peek();
+  return f.ready && (Math.abs(p.width - f.width) > 1 || Math.abs(p.height - f.height) > 1);
+}
+
+/** Взять размер бумаги с откалиброванного листа. true — если что-то поменялось. */
+export function syncPaperToFrame(): boolean {
+  if (!paperMismatch()) return false;
+  const f = app.frame.peek();
+  const r = (v: number) => Math.round(v * 2) / 2;
+  app.paper.patch({ width: r(f.width), height: r(f.height) });
+  return true;
+}
+
+/** Обвести поля (область текста) поднятой ручкой — увидеть на настоящем листе, где будет текст. */
+export function traceMargins() {
+  const p = app.paper.peek();
+  if (!app.frame.peek().ready) return toast('Сначала шаги 2–3 калибровки.', 'warn');
+  const pg = app.layout.peek().pages[app.currentPage.peek()];
+  const mirrored = pg?.mirrored ?? p.side === 'left';
+  let l = mirrored ? p.marginRight : p.marginLeft, r = p.width - (mirrored ? p.marginLeft : p.marginRight);
+  let t = p.marginTop, b = p.height - p.marginBottom;
+  if (p.rotate180) [l, r, t, b] = [p.width - r, p.width - l, p.height - b, p.height - t];
+  return traceRect(l, t, r, b);
+}
+
 export function calibCorner() {
   const [x, y] = machine.wpos.peek();
   if (!calib.peek().zeroSet) {
@@ -350,7 +382,12 @@ export function calibCorner() {
   }
   calib.patch({ corner: [Math.round(x * 100) / 100, Math.round(y * 100) / 100], cornerSet: true, stale: false });
   const f = app.frame.peek();
-  toast(`Лист: ${f.width.toFixed(1)} × ${f.height.toFixed(1)} мм. Каретка больше не выйдет за эти границы.`, 'ok', 8000);
+  // поля в программе считаются от краёв листа из настроек «Бумага»; если он другого размера, чем настоящий,
+  // на предпросмотре всё в полях, а на бумаге текст уезжает за край — поэтому размер берём с калибровки
+  if (f.width < 100 || f.height < 100) {
+    toast(`Область ${f.width.toFixed(0)}×${f.height.toFixed(0)} мм — меньше листа. Край (шаг 3) ставится в ПРАВЫЙ НИЖНИЙ угол самого листа, а ноль (шаг 2) — точно в левый верхний: поля отсчитываются от этих точек.`, 'warn', 14000);
+  } else if (syncPaperToFrame()) toast(`Лист: ${f.width.toFixed(1)} × ${f.height.toFixed(1)} мм — размер бумаги в программе подстроен под настоящий лист, поля отсчитываются от его краёв.`, 'ok', 10000);
+  else toast(`Лист: ${f.width.toFixed(1)} × ${f.height.toFixed(1)} мм. Каретка больше не выйдет за эти границы.`, 'ok', 8000);
 }
 
 export function calibSkew() {
@@ -371,6 +408,19 @@ export function calibGridOrigin() {
   const [u, v] = workToPaper(app.frame.peek(), x, y);
   calib.patch({ gridOrigin: [Math.round(u * 100) / 100, Math.round(v * 100) / 100] });
   toast('Запомнена линия сетки: строки встанут на линии клеток.', 'ok');
+}
+
+/** Стрелка едет не туда — перевернуть ось (до шага 3; шаг 3 потом сам узнаёт направление). */
+export function calibFlipAxis(axis: 0 | 1) {
+  const { corner: c, swap } = calib.peek();
+  const i = swap ? 1 - axis : axis;
+  calib.patch({ corner: i === 0 ? [-c[0], c[1]] : [c[0], -c[1]] });
+}
+
+/** Тетрадь стоит поперёк осей станка: ←→ двигают ось Y, ↑↓ — ось X. Лист после этого надо задать заново. */
+export function calibSwapAxes() {
+  const { corner: c, swap } = calib.peek();
+  calib.patch({ swap: !swap, corner: [c[1], c[0]], cornerSet: false, skewPoint: null });
 }
 
 export function calibResetAll() {
@@ -457,7 +507,12 @@ export async function writeSetting(key: number | string, value: string) {
 
 // --- печать ---
 
-export type PrintRange = { kind: 'all' } | { kind: 'current' } | { kind: 'from'; page: number };
+export type PrintRange =
+  | { kind: 'all' }
+  | { kind: 'current' }
+  | { kind: 'from'; page: number }
+  | { kind: 'lines'; from: number; to: number }
+  | { kind: 'zone'; zone: Zone };
 
 export function printBlockers(): string[] {
   const out: string[] = [];
@@ -472,15 +527,39 @@ export function printBlockers(): string[] {
   return out;
 }
 
-export function buildJobPages(range: PrintRange, dry: boolean): JobPage[] {
+export function buildJobPages(range: PrintRange, dry: boolean, skipOutside = false): JobPage[] {
   const n = app.pageCount.peek();
   let idx: number[] = [];
   if (range.kind === 'all') idx = [...Array(n).keys()];
-  else if (range.kind === 'current') idx = [Math.min(app.currentPage.peek(), n - 1)];
+  else if (range.kind === 'current' || range.kind === 'lines' || range.kind === 'zone') idx = [Math.min(app.currentPage.peek(), n - 1)];
   else idx = [...Array(n).keys()].filter((i) => i >= range.page);
-  return idx
-    .map((i) => ({ plan: app.planFor(i, { dryRun: dry }), pageNo: i }))
-    .filter((p): p is JobPage => !!p.plan && p.plan.gcode.length > 0);
+  // на каждой странице сначала текст ручкой, потом рисунки карандашом (с паузой на смену и обратно)
+  const out: JobPage[] = [];
+  let pencilIn = false;
+  for (const i of idx) {
+    // отдельные строки — только текст ручкой, без рисунков
+    const lines: [number, number] | undefined = range.kind === 'lines' ? [range.from, range.to] : undefined;
+    const zone = range.kind === 'zone' ? range.zone : undefined;
+    const pen = app.planFor(i, { dryRun: dry, tool: 'pen', lines, zone, skipOutside });
+    const pencil = lines ? null : app.planFor(i, { dryRun: dry, tool: 'pencil', zone, skipOutside });
+    const hasPen = !!pen && pen.strokes.length > 0;
+    const hasPencil = !!pencil && pencil.strokes.length > 0;
+    if (hasPen) {
+      const before = pencilIn
+        ? `Рисунки карандашом готовы. Верните ручку (кончик на той же высоте), положите страницу ${i + 1} и нажмите «Продолжить».`
+        : undefined;
+      out.push({ plan: pen!, pageNo: i, before });
+      pencilIn = false;
+    }
+    if (hasPencil) {
+      const before = pencilIn
+        ? `Положите страницу ${i + 1} — карандаш оставьте и нажмите «Продолжить».`
+        : `Текст страницы ${i + 1} готов. Вставьте КАРАНДАШ вместо ручки (кончик на той же высоте над бумагой) и нажмите «Продолжить» — нарисую рисунки.`;
+      out.push({ plan: pencil!, pageNo: i, before });
+      pencilIn = true;
+    }
+  }
+  return out;
 }
 
 export async function startPrint(range: PrintRange, fromStroke = 0) {
@@ -488,12 +567,18 @@ export async function startPrint(range: PrintRange, fromStroke = 0) {
   if (blockers.length) return toast('Печать недоступна: ' + blockers.join('; '), 'warn');
   if (job.active) return;
   const dry = app.dryRun.peek();
-  const pages = buildJobPages(range, dry);
+  let pages = buildJobPages(range, dry);
   if (!pages.length) return toast('Нет страниц для печати.', 'warn');
-  const bad = pages.find((p) => p.plan.outOfBounds.length);
-  if (bad) {
-    app.currentPage.value = bad.pageNo;
-    return toast(`Страница ${bad.pageNo + 1}: часть текста выходит за лист (подсвечено красным). Уменьшите поля/шрифт или проверьте калибровку.`, 'err');
+  const bad = pages.filter((p) => p.plan.outOfBounds.length);
+  if (bad.length) {
+    // не запрещаем: показываем, где вылезло, и предлагаем напечатать то, что помещается
+    app.currentPage.value = bad[0].pageNo;
+    if (app.source.peek().kind === 'gcode') return toast('Готовый G-код выходит за край листа — проверьте калибровку или файл.', 'err');
+    const n = bad.reduce((a, p) => a + p.plan.outOfBounds.length, 0);
+    const where = bad.map((p) => p.pageNo + 1).join(', ');
+    if (!confirm(`${n} штрих(ов) на стр. ${where} выходят за край листа (подсвечены красным).\n\nНапечатать всё остальное, а то, что за краем, пропустить?\n«Отмена» — вернуться и поправить поля, шрифт или выбрать зону.`)) return;
+    pages = buildJobPages(range, dry, true).filter((p) => p.plan.strokes.length);
+    if (!pages.length) return toast('Внутри листа нечего печатать.', 'warn');
   }
   if (machine.state.peek() !== 'Idle') {
     try {
@@ -618,7 +703,7 @@ function textStrokes(text: string, u: number, v: number, size = 3): Stroke[] {
   return r.pages[0]?.strokes ?? [];
 }
 
-export type PatternKind = 'square' | 'cross' | 'grid' | 'speed' | 'paragraph';
+export type PatternKind = 'square' | 'cross' | 'grid' | 'speed' | 'paragraph' | 'backlash';
 
 export function patternPlanFor(kind: PatternKind): Plan {
   const p = app.paper.peek();
@@ -650,6 +735,16 @@ export function patternPlanFor(kind: PatternKind): Plan {
         return patternPlan([...textStrokes(String(fd), L, v + 1.5, 3), { pts: wave, line: 1 }], 'скорость ' + fd, fd);
       });
       return mergePlans(plans, 'полоса скоростей');
+    }
+    case 'backlash': {
+      // без поправки на люфт и медленно: меряем саму механику
+      const g = BUILTIN_FONTS.find((x) => x.id === 'gost-b')!;
+      const digit = (ch: string) => {
+        const gl = g.glyphs.get(ch)?.[0];
+        return gl ? gl.s.map((st) => st.map((c, i) => (i % 2 === 0 ? c / g.capHeight : (g.capHeight - c) / g.capHeight))) : [];
+      };
+      const fr = f.ready ? f : { ...f, width: W, height: H };
+      return gcodePlan(backlashTestGcode(fr, calib.peek(), app.pen.peek(), 1500, digit));
     }
     case 'paragraph': {
       const r = layoutText({ text: 'Съешь же ещё этих мягких французских булок, да выпей чаю. Пробный абзац для проверки нажима, скорости и почерка: 0123456789.', font: app.font.peek(), typo: app.typo.peek(), paper: { ...p, startLine: 1 } });

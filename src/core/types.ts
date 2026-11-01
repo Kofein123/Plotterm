@@ -5,6 +5,8 @@
 export interface Stroke {
   pts: number[];
   line: number;
+  /** чем рисовать: по умолчанию ручкой; «pencil» — после текста страницы, с паузой на смену */
+  tool?: 'pencil';
 }
 
 export interface PageLayout {
@@ -19,11 +21,32 @@ export interface PageLayout {
   baselines: number[];
 }
 
+/** Экземпляр буквы на странице: штрихи уже в бумажных координатах (мм). */
+export interface GlyphInstance {
+  ch: string;
+  page: number;
+  strokes: number[][];
+}
+
+/** Связный штрих слова: joints — номера точек, где буква переходит в соединение и обратно. */
+export interface CursiveRun {
+  page: number;
+  pts: number[];
+  joints: number[];
+}
+
+export interface LayoutTrace {
+  glyphs: GlyphInstance[];
+  runs: CursiveRun[];
+}
+
 export interface LayoutResult {
   pages: PageLayout[];
   missingChars: string[];
   /** символов в тексте (без пробелов) */
   chars: number;
+  /** трасса вёрстки, если просили `trace: true` */
+  trace?: LayoutTrace;
 }
 
 export type PaperTemplate = 'a4' | 'grid' | 'ruled' | 'custom';
@@ -81,6 +104,8 @@ export interface Calibration {
   cornerSet: boolean;
   /** противоположный угол листа в рабочих координатах X, Y */
   corner: [number, number];
+  /** оси станка повёрнуты к листу на 90°: X станка идёт вдоль высоты листа, Y — вдоль ширины */
+  swap?: boolean;
   /** точка на верхнем крае листа для компенсации перекоса */
   skewPoint: [number, number] | null;
   /** узел сетки / линия линейки в бумажных координатах */
@@ -89,6 +114,8 @@ export interface Calibration {
   lastMPos: [number, number, number] | null;
   /** калибровка, возможно, устарела (плата перезагружалась) */
   stale: boolean;
+  /** люфт механики, мм: [поперёк листа (вдоль строки), вдоль высоты листа] — из теста люфта */
+  backlash?: [number, number];
 }
 
 export interface PenSettings {
@@ -104,6 +131,8 @@ export interface PenSettings {
   hopLift: number;
   /** до какой длины переезд считается коротким, мм */
   hopDistance: number;
+  /** версия настроек низкого подъёма (2 — по умолчанию 2 мм) */
+  hopV?: number;
 }
 
 export interface SpeedSettings {

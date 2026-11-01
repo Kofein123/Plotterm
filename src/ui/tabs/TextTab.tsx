@@ -1,19 +1,95 @@
 import { h } from '../dom.ts';
-import { app, SAMPLE_TEXT, type SubjectProfile } from '../../app/state.ts';
-import { Btn, Icon, Note, Section } from '../components.tsx';
+import { app, SAMPLE_TEXT, saveImages, type SubjectProfile } from '../../app/state.ts';
+import { docxToDocument, missingImages, pdfToDocument } from '../../io/document.ts';
+import { vectorize, type VectorMode, type VectorDrawing } from '../../io/vectorize.ts';
+import type { Gray } from '../../io/templateImport.ts';
+import { signal } from '../reactive.ts';
+import { imageFileToGray } from '../../io/image.ts';
+import { Btn, Icon, Note, Section, Segmented } from '../components.tsx';
 import { readTextFile, svgToStrokes } from '../../io/importers.ts';
 import { pickFile, toast, fmtTime } from '../../app/notify.ts';
 
 async function importText() {
-  const f = await pickFile('.txt,.md,.markdown,.docx,text/plain');
+  const f = await pickFile('.pdf,.docx,.txt,.md,.markdown,text/plain,application/pdf');
   if (!f) return;
+  const name = f.name.toLowerCase();
   try {
+    if (name.endsWith('.pdf') || name.endsWith('.docx')) {
+      toast(`Читаю «${f.name}»: текст и рисунки…`, 'info', 4000);
+      const buf = await f.arrayBuffer();
+      const d = name.endsWith('.pdf') ? await pdfToDocument(buf, (m) => toast(m, 'info', 1500)) : await docxToDocument(buf);
+      await saveImages(d.images.map((im) => ({ ...im, id: im.id })));
+      app.text.value = d.text;
+      app.source.value = { kind: 'text' };
+      app.currentPage.value = 0;
+      const marked = [...d.text.matchAll(/\(img:[\w-]+ (место|карандаш)\)/g)];
+      toast(
+        `Загружено: ${f.name} · рисунков ${d.images.length}` +
+          (marked.length ? ` (из них ${marked.filter((m) => m[1] === 'место').length} — место под распечатку, ${marked.filter((m) => m[1] === 'карандаш').length} — карандашом)` : '') +
+          '. Проверьте текст и страницы в предпросмотре.',
+        'ok',
+        8000,
+      );
+      return;
+    }
     const t = await readTextFile(f);
     app.text.value = t;
     app.source.value = { kind: 'text' };
     toast(`Загружено: ${f.name}`, 'ok');
   } catch (e: any) {
     toast('Не удалось прочитать файл: ' + (e?.message ?? e), 'err');
+  }
+}
+
+/** Картинка (фото схемы, скриншот) → линии; в текст вставляется строка-рисунок. */
+async function insertPicture(insert: (s: string) => void) {
+  const f = await pickFile('image/*,.svg');
+  if (!f) return;
+  try {
+    const g = await imageFileToGray(f, 1800);
+    const d = vectorize(g, { mode: 'auto' });
+    if (!d.paths.length) return toast('На картинке не нашлось линий.', 'warn');
+    const id = 'r' + Date.now().toString(36);
+    await saveImages([{ id, name: f.name, ...d }]);
+    insert(`\n![](img:${id} 70%)\n`);
+    toast(`Рисунок «${f.name}»: ${d.paths.length} линий. В строке можно поменять ширину (70 %) и добавить «карандаш» или «место».`, 'ok', 8000);
+  } catch (e: any) {
+    toast('Не удалось открыть картинку: ' + (e?.message ?? e), 'err');
+  }
+}
+
+const picMode = signal<VectorMode>('auto');
+/** последняя загруженная картинка — чтобы пересчитать её при смене режима без повторного выбора файла */
+let lastPic: { name: string; g: Gray } | null = null;
+
+/** Рисунок (доли ширины) → штрихи в мм, вписанные в поля листа, по центру сверху. */
+function placeDrawing(d: VectorDrawing) {
+  const p = app.paper.peek();
+  const maxW = p.width - p.marginLeft - p.marginRight, maxH = p.height - p.marginTop - p.marginBottom;
+  const k = Math.min(maxW, maxH / Math.max(0.01, d.aspect));
+  const left = p.marginLeft + (maxW - k) / 2;
+  return d.paths.map((pts) => ({ pts: pts.map((v, i) => (i % 2 === 0 ? left + v * k : p.marginTop + v * k)), line: 0 }));
+}
+
+function showPicture() {
+  if (!lastPic) return;
+  const d = vectorize(lastPic.g, { mode: picMode.peek(), size: 1000 });
+  if (!d.paths.length) return toast('На картинке не нашлось линий: попробуйте картинку контрастнее (тёмный рисунок на светлом фоне).', 'warn', 8000);
+  app.source.value = { kind: 'drawing', name: lastPic.name, strokes: placeDrawing(d) };
+  app.currentPage.value = 0;
+  return d.paths.length;
+}
+
+/** Обычная картинка (PNG, JPG, SVG…) → линии для ручки на весь лист. */
+export async function importPicture() {
+  const f = await pickFile('image/*,.svg');
+  if (!f) return;
+  try {
+    lastPic = { name: f.name, g: await imageFileToGray(f, 2000) };
+    const n = showPicture();
+    if (n) toast(`Картинка «${f.name}»: ${n} линий, вписана в поля. Если вышло не так — смените «Как рисовать» под кнопкой.`, 'ok', 8000);
+  } catch (e: any) {
+    toast('Не удалось открыть картинку: ' + (e?.message ?? e), 'err');
   }
 }
 
@@ -84,7 +160,7 @@ export function TextTab() {
         title="Текст конспекта"
         aside={
           <span class="row">
-            <Btn small kind="ghost" onClick={() => importText()} title=".txt, .md, .docx"><Icon name="upload" size={14} /> Файл</Btn>
+            <Btn small kind="ghost" onClick={() => importText()} title="PDF, Word (.docx), .txt, .md — вместе с рисунками"><Icon name="upload" size={14} /> Файл лекции</Btn>
           </span>
         }
       >
@@ -107,6 +183,7 @@ export function TextTab() {
           <button class="chip" title="Корень" onClick={() => insert('√')}>√</button>
           <button class="chip" title="Подчеркнуть" onClick={() => insert('____')}>подчеркнуть</button>
           <button class="chip" title="Новая страница" onClick={() => insert('\n===\n')}>новая стр.</button>
+          <button class="chip" title="Рисунок из фото или картинки: плоттер нарисует его линиями" onClick={() => insertPicture(insert)}>+ рисунок</button>
         </div>
         <div class="text-stats muted">
           {() => {
@@ -114,6 +191,14 @@ export function TextTab() {
             const n = l.pages.length;
             return `${l.chars} знаков · ${n} стр. · ≈ ${fmtTime(app.totalEstimate.value)}`;
           }}
+        </div>
+        {() => {
+          const miss = missingImages(app.text.value, app.images.value);
+          return miss.length ? <Note kind="warn">Нет рисунков: {miss.join(', ')} — на их месте останется пустое место. Загрузите файл лекции заново на этом устройстве.</Note> : null;
+        }}
+        <div class="muted small">
+          Рисунок — строка <code>![подпись](img:…)</code>: добавьте «50%», чтобы сделать уже, «карандаш» — нарисовать карандашом после текста
+          страницы (плоттер попросит сменить ручку), «место» — оставить место под распечатку.
         </div>
         {() =>
           app.layout.value.missingChars.length ? (
@@ -142,10 +227,25 @@ export function TextTab() {
       </Section>
       <Section title="Другое на лист">
         <div class="row wrap">
-          <Btn small onClick={() => importSvg()}><Icon name="upload" size={14} /> Рисунок SVG</Btn>
+          <Btn small kind="primary" onClick={() => importPicture()}><Icon name="upload" size={14} /> Картинка (PNG, JPG, SVG)</Btn>
+          <Btn small onClick={() => importSvg()} title="Для чертежей, где SVG уже нарисован линиями: линии берутся как есть"><Icon name="upload" size={14} /> SVG-чертёж как есть</Btn>
           <Btn small onClick={() => importGcode()}><Icon name="upload" size={14} /> Готовый G-код</Btn>
           <Btn small kind="ghost" onClick={() => { if (confirm('Вернуть пример текста?')) app.text.value = SAMPLE_TEXT; }}>Пример текста</Btn>
         </div>
+        <div class="row wrap" style="margin-top:6px">
+          <span class="small muted">Как рисовать картинку:</span>
+          <Segmented
+            small
+            value={() => picMode.value}
+            onChange={(v) => { picMode.value = v; if (lastPic && app.source.peek().kind === 'drawing') showPicture(); }}
+            options={[
+              { value: 'auto', label: 'Авто' },
+              { value: 'lines', label: 'Линиями' },
+              { value: 'outline', label: 'Контуром' },
+            ]}
+          />
+        </div>
+        <div class="muted small">«Линиями» — для схем и рисунков линией, «Контуром» — для залитых силуэтов и жирных букв, «Авто» решает для каждого пятна. Конвертировать в SVG заранее не нужно.</div>
       </Section>
     </div>
   );

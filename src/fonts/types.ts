@@ -8,6 +8,8 @@ export interface GlyphData {
   i?: [number, number];
   /** связное письмо: точка выхода [x, y] */
   o?: [number, number];
+  /** номер штриха, который кончается в точке выхода (по умолчанию главный, s[0]) */
+  oi?: number;
 }
 
 export interface FontData {

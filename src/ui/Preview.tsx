@@ -1,7 +1,7 @@
 // Предпросмотр листа: шаблон бумаги, штрихи, порядок печати, положение пера, границы.
 import { h } from './dom.ts';
 import { signal, effect, onCleanup } from './reactive.ts';
-import { app } from '../app/state.ts';
+import { app, textLines, strokeCenter, inZone, type Zone } from '../app/state.ts';
 import { simInk, printFromStroke } from '../app/actions.ts';
 import { workToPaper } from '../core/calibration.ts';
 import { polyDist2 } from '../core/geometry.ts';
@@ -30,6 +30,8 @@ export function Preview() {
   let canvas!: HTMLCanvasElement;
   let wrap!: HTMLDivElement;
   const size = signal({ w: 800, h: 600 });
+  /** зона, которую сейчас тянут мышью (мм листа) */
+  const zoneDraft = signal<Zone | null>(null);
   let raf = 0;
   let colors: Record<string, string> = {};
   const readColors = () => {
@@ -154,8 +156,35 @@ export function Preview() {
         ctx.stroke();
         ctx.setLineDash([]);
       }
+      // режим «Строки»: номера строк слева, невыбранные строки бледные
+      const pl = jobActive ? null : app.printLines.peek();
+      const order = textLines(plan.strokeLine.map((line) => ({ line })));
+      const chosen = pl ? new Set(order.slice(pl[0] - 1, pl[1])) : null;
+      const zone = jobActive || !app.zoneMode.peek() ? null : zoneDraft.peek() ?? app.printZone.peek();
+      const outZone = zone ? plan.strokes.map((st) => { const [u, v] = strokeCenter(st); return !inZone(zone, u, v); }) : null;
+      const off = (i: number) => (!!chosen && !chosen.has(plan.strokeLine[i])) || (!!outZone && outZone[i]);
+      if (pl) {
+        const ys = new Map<number, [number, number]>();
+        plan.strokes.forEach((st, i) => {
+          const l = plan.strokeLine[i];
+          if (l <= 0) return;
+          const r = ys.get(l) ?? [Infinity, -Infinity];
+          for (let j = 1; j < st.length; j += 2) { r[0] = Math.min(r[0], st[j]); r[1] = Math.max(r[1], st[j]); }
+          ys.set(l, r);
+        });
+        ctx.font = `${Math.max(2.6, px * 11)}px sans-serif`;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        order.forEach((l, k) => {
+          const r = ys.get(l);
+          if (!r) return;
+          ctx.fillStyle = chosen!.has(l) ? colors.current : colors.travel;
+          ctx.fillText(String(k + 1), Math.max(4, app.paper.peek().marginLeft - 1.5), (r[0] + r[1]) / 2);
+        });
+      }
       const groups: [string, (i: number) => boolean][] = [
-        [jobActive ? colors.pending : colors.ink, (i) => !bad.has(i) && (!jobActive || i > cur)],
+        [colors.travel, (i) => off(i)],
+        [jobActive ? colors.pending : colors.ink, (i) => !off(i) && !bad.has(i) && (!jobActive || i > cur)],
         [colors.done, (i) => !bad.has(i) && jobActive && i < cur],
         [colors.current, (i) => !bad.has(i) && jobActive && i === cur],
         [colors.bad, (i) => bad.has(i)],
@@ -173,6 +202,18 @@ export function Preview() {
         });
         ctx.stroke();
       }
+    }
+
+    // зона печати
+    const zr = app.zoneMode.peek() && !jobActive ? zoneDraft.peek() ?? app.printZone.peek() : null;
+    if (zr) {
+      ctx.fillStyle = 'rgba(80,140,255,0.08)';
+      ctx.fillRect(zr[0], zr[1], zr[2] - zr[0], zr[3] - zr[1]);
+      ctx.strokeStyle = colors.current;
+      ctx.lineWidth = Math.max(0.3, px * 1.5);
+      ctx.setLineDash([3, 2]);
+      ctx.strokeRect(zr[0], zr[1], zr[2] - zr[0], zr[3] - zr[1]);
+      ctx.setLineDash([]);
     }
 
     // след симулятора
@@ -243,6 +284,10 @@ export function Preview() {
   // перерисовка при изменениях
   effect(() => {
     shownPlan();
+    app.printLines.value;
+    app.zoneMode.value;
+    app.printZone.value;
+    zoneDraft.value;
     app.job.currentStroke.value;
     app.job.resumePoint.value;
     app.machine.wpos.value;
@@ -279,12 +324,30 @@ export function Preview() {
   };
 
   let drag: { x: number; y: number; ox: number; oy: number; moved: boolean } | null = null;
+  const toPaper = (e: PointerEvent): [number, number] => {
+    const r = canvas.getBoundingClientRect();
+    const v = view.peek();
+    return [(e.clientX - r.left - v.ox) / v.scale, (e.clientY - r.top - v.oy) / v.scale];
+  };
+  let zoneStart: [number, number] | null = null;
   const onDown = (e: PointerEvent) => {
     canvas.setPointerCapture(e.pointerId);
+    // режим «Зона»: левой кнопкой (или пальцем) — выделение, колесо и правая/средняя кнопка — как обычно
+    if (app.zoneMode.peek() && !pickMode.peek() && e.button === 0 && !app.job.active) {
+      zoneStart = toPaper(e);
+      zoneDraft.value = null;
+      return;
+    }
     const v = view.peek();
     drag = { x: e.clientX, y: e.clientY, ox: v.ox, oy: v.oy, moved: false };
   };
   const onMove = (e: PointerEvent) => {
+    if (zoneStart) {
+      const [u, v] = toPaper(e);
+      const [a, b] = zoneStart;
+      zoneDraft.value = [Math.min(a, u), Math.min(b, v), Math.max(a, u), Math.max(b, v)];
+      return;
+    }
     if (!drag) return;
     const dx = e.clientX - drag.x;
     const dy = e.clientY - drag.y;
@@ -292,6 +355,13 @@ export function Preview() {
     if (drag.moved) view.value = { ...view.peek(), ox: drag.ox + dx, oy: drag.oy + dy };
   };
   const onUp = (e: PointerEvent) => {
+    if (zoneStart) {
+      const z = zoneDraft.peek();
+      zoneStart = null;
+      zoneDraft.value = null;
+      if (z && z[2] - z[0] > 2 && z[3] - z[1] > 2) app.printZone.value = z.map((x) => Math.round(x * 10) / 10) as Zone;
+      return;
+    }
     const d = drag;
     drag = null;
     if (!d || d.moved || !pickMode.peek()) return;
@@ -336,7 +406,7 @@ export function Preview() {
     <div class="preview" ref={(el: HTMLDivElement) => (wrap = el)}>
       <canvas
         ref={mountCanvas}
-        class={() => (pickMode.value ? 'picking' : '')}
+        class={() => (pickMode.value || app.zoneMode.value ? 'picking' : '')}
         onPointerDown={onDown}
         onPointerMove={onMove}
         onPointerUp={onUp}
@@ -374,6 +444,18 @@ export function Preview() {
         </div>
       </div>
       {() =>
+        app.zoneMode.value && !pickMode.value ? (
+          <div class="pick-bar">
+            <span>
+              {() =>
+                app.printZone.value
+                  ? 'Напечатается только то, что внутри рамки. Потяните заново, чтобы выбрать другую зону.'
+                  : 'Потяните мышью или пальцем по листу — выделите зону, которую печатать.'}
+            </span>
+          </div>
+        ) : null
+      }
+      {() =>
         pickMode.value ? (
           <div class="pick-bar">
             {() =>
@@ -410,7 +492,15 @@ export function Preview() {
               <span title="Штрихов (подъёмов ручки)">↕ {pl.penLifts}</span>
               <span title="Длина линий">✎ {(pl.drawLength / 1000).toFixed(2)} м</span>
               <span title="Оценка времени этой страницы">⏱ {fmtTime(pl.estSeconds)}</span>
-              {pl.outOfBounds.length ? <span class="legend-bad">за краем: {pl.outOfBounds.length}</span> : null}
+              {(() => {
+                const f = app.frame.value, pp = app.paper.value;
+                return f.ready && (Math.abs(pp.width - f.width) > 1 || Math.abs(pp.height - f.height) > 1) ? (
+                  <span class="legend-bad" title={`Настоящий лист ${f.width.toFixed(1)}×${f.height.toFixed(1)} мм, в настройках бумаги ${pp.width}×${pp.height}. Вкладка «Бумага» → «Взять размер с калибровки».`}>
+                    лист ≠ калибровке
+                  </span>
+                ) : null;
+              })()}
+              {pl.outOfBounds.length ? <span class="legend-bad" title="При печати программа предложит пропустить их">за краем: {pl.outOfBounds.length}</span> : null}
             </span>
           );
         }}

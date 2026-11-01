@@ -1,6 +1,7 @@
 import { h } from "../dom.js";
 import { app, PAPER_PRESETS } from "../../app/state.js";
-import { Field, NumInput, Note, Section, Segmented, Toggle, bind } from "../components.js";
+import { Btn, Field, NumInput, Note, Section, Segmented, Toggle, bind } from "../components.js";
+import { syncPaperToFrame, traceMargins } from "../../app/actions.js";
 export function PaperTab() {
     const p = app.paper;
     const tpl = () => p.value.template;
@@ -9,6 +10,10 @@ export function PaperTab() {
             p.patch({ template: 'custom' });
         else
             p.patch(PAPER_PRESETS[k].p);
+        // размер — с настоящего листа, если он откалиброван целиком (шаблон меняет только разлиновку и поля)
+        const f = app.frame.peek();
+        if (f.width >= 100 && f.height >= 100)
+            syncPaperToFrame();
     };
     return (h("div", { class: "tab" },
         h(Section, { title: "\u0411\u0443\u043C\u0430\u0433\u0430" },
@@ -24,12 +29,21 @@ export function PaperTab() {
             () => {
                 const f = app.frame.value;
                 const pp = p.value;
-                return f.ready && (pp.width > f.width + 2 || pp.height > f.height + 2) ? (h(Note, { kind: "warn" },
-                    "\u041B\u0438\u0441\u0442 \u0431\u043E\u043B\u044C\u0448\u0435 \u043E\u0442\u043A\u0430\u043B\u0438\u0431\u0440\u043E\u0432\u0430\u043D\u043D\u043E\u0439 \u043E\u0431\u043B\u0430\u0441\u0442\u0438 (",
-                    f.width.toFixed(0),
+                if (!f.ready)
+                    return h("div", { class: "muted small" }, "\u041F\u0440\u043E\u0439\u0434\u0438\u0442\u0435 \u0448\u0430\u0433\u0438 2\u20133 \u043A\u0430\u043B\u0438\u0431\u0440\u043E\u0432\u043A\u0438 \u2014 \u0440\u0430\u0437\u043C\u0435\u0440 \u0432\u043E\u0437\u044C\u043C\u0451\u0442\u0441\u044F \u0441 \u043D\u0430\u0441\u0442\u043E\u044F\u0449\u0435\u0433\u043E \u043B\u0438\u0441\u0442\u0430.");
+                return Math.abs(pp.width - f.width) > 1 || Math.abs(pp.height - f.height) > 1 ? (h(Note, { kind: "warn" },
+                    "\u041F\u043E \u043A\u0430\u043B\u0438\u0431\u0440\u043E\u0432\u043A\u0435 \u043B\u0438\u0441\u0442 ",
+                    f.width.toFixed(1),
                     "\u00D7",
-                    f.height.toFixed(0),
-                    " \u043C\u043C) \u2014 \u0442\u0435\u043A\u0441\u0442 \u0443 \u043A\u0440\u0430\u044F \u043D\u0435 \u043D\u0430\u043F\u0435\u0447\u0430\u0442\u0430\u0435\u0442\u0441\u044F.")) : null;
+                    f.height.toFixed(1),
+                    " \u043C\u043C, \u0430 \u0437\u0434\u0435\u0441\u044C ",
+                    pp.width,
+                    "\u00D7",
+                    pp.height,
+                    ". \u041F\u043E\u043B\u044F \u043E\u0442\u0441\u0447\u0438\u0442\u044B\u0432\u0430\u044E\u0442\u0441\u044F \u043E\u0442 \u043A\u0440\u0430\u0451\u0432 \u043B\u0438\u0441\u0442\u0430, \u043F\u043E\u044D\u0442\u043E\u043C\u0443 \u043D\u0430 \u0431\u0443\u043C\u0430\u0433\u0435 \u0442\u0435\u043A\u0441\u0442 \u0441\u0434\u0432\u0438\u043D\u0435\u0442\u0441\u044F \u0438\u043B\u0438 \u0443\u0439\u0434\u0451\u0442 \u0437\u0430 \u043A\u0440\u0430\u0439.",
+                    f.width < 100 || f.height < 100 ? ' Похоже, шаг 3 сделан не в углу листа: повторите шаги 2–3 — ноль точно в левом верхнем углу листа, край в правом нижнем.' : '',
+                    h("div", { class: "row", style: "margin-top:6px" },
+                        h(Btn, { small: true, kind: "primary", onClick: () => syncPaperToFrame() }, "\u0412\u0437\u044F\u0442\u044C \u0440\u0430\u0437\u043C\u0435\u0440 \u0441 \u043A\u0430\u043B\u0438\u0431\u0440\u043E\u0432\u043A\u0438")))) : (h("div", { class: "muted small" }, "\u2713 \u0420\u0430\u0437\u043C\u0435\u0440 \u0441\u043E\u0432\u043F\u0430\u0434\u0430\u0435\u0442 \u0441 \u043E\u0442\u043A\u0430\u043B\u0438\u0431\u0440\u043E\u0432\u0430\u043D\u043D\u044B\u043C \u043B\u0438\u0441\u0442\u043E\u043C."));
             }),
         h(Section, { title: "\u0421\u0442\u0440\u043E\u043A\u0438" },
             () => tpl() === 'grid' ? (h("div", { class: "grid2" },
@@ -54,6 +68,9 @@ export function PaperTab() {
                     h(NumInput, { value: bind(p, 'marginRight').get, onChange: bind(p, 'marginRight').set, min: 0, max: 100, unit: "\u043C\u043C" }))),
             h(Field, { label: "\u0421\u0442\u0440\u0430\u043D\u0438\u0446\u0430 \u0442\u0435\u0442\u0440\u0430\u0434\u0438", hint: "\u043D\u0430 \u043B\u0435\u0432\u043E\u0439 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0435 \u043F\u043E\u043B\u044F \u0437\u0435\u0440\u043A\u0430\u043B\u044F\u0442\u0441\u044F" },
                 h(Segmented, { value: bind(p, 'side').get, onChange: bind(p, 'side').set, options: [{ value: 'right', label: 'Правая' }, { value: 'left', label: 'Левая' }, { value: 'alternate', label: 'Чередовать' }] })),
+            h("div", { class: "row wrap" },
+                h(Btn, { small: true, kind: "ghost", onClick: () => traceMargins(), disabled: () => app.machine.conn.value !== 'connected' || app.job.active, title: "\u0420\u0443\u0447\u043A\u0430 \u043F\u043E\u0434\u043D\u044F\u0442\u0430: \u043A\u0430\u0440\u0435\u0442\u043A\u0430 \u043F\u0440\u043E\u0435\u0434\u0435\u0442 \u043F\u043E \u0433\u0440\u0430\u043D\u0438\u0446\u0435 \u043F\u043E\u043B\u0435\u0439" }, "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u043F\u043E\u043B\u044F \u043D\u0430 \u043B\u0438\u0441\u0442\u0435"),
+                h("span", { class: "muted small" }, "\u043A\u0430\u0440\u0435\u0442\u043A\u0430 \u0441 \u043F\u043E\u0434\u043D\u044F\u0442\u043E\u0439 \u0440\u0443\u0447\u043A\u043E\u0439 \u043F\u0440\u043E\u0435\u0434\u0435\u0442 \u043F\u043E \u0433\u0440\u0430\u043D\u0438\u0446\u0435 \u043F\u043E\u043B\u0435\u0439 \u2014 \u0432\u0438\u0434\u043D\u043E, \u0433\u0434\u0435 \u0431\u0443\u0434\u0435\u0442 \u0442\u0435\u043A\u0441\u0442")),
             h(Toggle, { value: bind(p, 'rotate180').get, onChange: bind(p, 'rotate180').set, label: "\u041F\u043E\u0432\u0435\u0440\u043D\u0443\u0442\u044C \u043D\u0430 180\u00B0 (\u043E\u0431\u043E\u0440\u043E\u0442 \u043B\u0438\u0441\u0442\u0430)", hint: "\u0414\u043B\u044F \u043E\u0431\u0440\u0430\u0442\u043D\u043E\u0439 \u0441\u0442\u043E\u0440\u043E\u043D\u044B: \u043B\u0438\u0441\u0442 \u043A\u043B\u0430\u0434\u0451\u0442\u0441\u044F \u0440\u0430\u0437\u0432\u0451\u0440\u043D\u0443\u0442\u044B\u043C, \u0442\u0435\u043A\u0441\u0442 \u043F\u0435\u0447\u0430\u0442\u0430\u0435\u0442\u0441\u044F \u0432\u0432\u0435\u0440\u0445 \u043D\u043E\u0433\u0430\u043C\u0438 \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0435\u043B\u044C\u043D\u043E \u0441\u0442\u0430\u043D\u043A\u0430" })),
         h(Section, { title: "\u0414\u043E\u043F\u0438\u0441\u0430\u0442\u044C \u043D\u0430 \u043D\u0430\u0447\u0430\u0442\u043E\u0439 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0435" },
             h(Field, { label: "\u041D\u0430\u0447\u0430\u0442\u044C \u0441 \u0441\u0442\u0440\u043E\u043A\u0438 \u2116", hint: "\u043F\u0435\u0440\u0432\u044B\u0435 \u0441\u0442\u0440\u043E\u043A\u0438 \u043F\u0435\u0440\u0432\u043E\u0439 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u044B \u043E\u0441\u0442\u0430\u043D\u0443\u0442\u0441\u044F \u043F\u0443\u0441\u0442\u044B\u043C\u0438" },

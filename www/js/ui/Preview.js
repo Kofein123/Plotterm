@@ -1,7 +1,7 @@
 // Предпросмотр листа: шаблон бумаги, штрихи, порядок печати, положение пера, границы.
 import { h } from "./dom.js";
 import { signal, effect, onCleanup } from "./reactive.js";
-import { app } from "../app/state.js";
+import { app, textLines, strokeCenter, inZone } from "../app/state.js";
 import { simInk, printFromStroke } from "../app/actions.js";
 import { workToPaper } from "../core/calibration.js";
 import { polyDist2 } from "../core/geometry.js";
@@ -26,6 +26,8 @@ export function Preview() {
     let canvas;
     let wrap;
     const size = signal({ w: 800, h: 600 });
+    /** зона, которую сейчас тянут мышью (мм листа) */
+    const zoneDraft = signal(null);
     let raf = 0;
     let colors = {};
     const readColors = () => {
@@ -159,8 +161,40 @@ export function Preview() {
                 ctx.stroke();
                 ctx.setLineDash([]);
             }
+            // режим «Строки»: номера строк слева, невыбранные строки бледные
+            const pl = jobActive ? null : app.printLines.peek();
+            const order = textLines(plan.strokeLine.map((line) => ({ line })));
+            const chosen = pl ? new Set(order.slice(pl[0] - 1, pl[1])) : null;
+            const zone = jobActive || !app.zoneMode.peek() ? null : zoneDraft.peek() ?? app.printZone.peek();
+            const outZone = zone ? plan.strokes.map((st) => { const [u, v] = strokeCenter(st); return !inZone(zone, u, v); }) : null;
+            const off = (i) => (!!chosen && !chosen.has(plan.strokeLine[i])) || (!!outZone && outZone[i]);
+            if (pl) {
+                const ys = new Map();
+                plan.strokes.forEach((st, i) => {
+                    const l = plan.strokeLine[i];
+                    if (l <= 0)
+                        return;
+                    const r = ys.get(l) ?? [Infinity, -Infinity];
+                    for (let j = 1; j < st.length; j += 2) {
+                        r[0] = Math.min(r[0], st[j]);
+                        r[1] = Math.max(r[1], st[j]);
+                    }
+                    ys.set(l, r);
+                });
+                ctx.font = `${Math.max(2.6, px * 11)}px sans-serif`;
+                ctx.textAlign = 'right';
+                ctx.textBaseline = 'middle';
+                order.forEach((l, k) => {
+                    const r = ys.get(l);
+                    if (!r)
+                        return;
+                    ctx.fillStyle = chosen.has(l) ? colors.current : colors.travel;
+                    ctx.fillText(String(k + 1), Math.max(4, app.paper.peek().marginLeft - 1.5), (r[0] + r[1]) / 2);
+                });
+            }
             const groups = [
-                [jobActive ? colors.pending : colors.ink, (i) => !bad.has(i) && (!jobActive || i > cur)],
+                [colors.travel, (i) => off(i)],
+                [jobActive ? colors.pending : colors.ink, (i) => !off(i) && !bad.has(i) && (!jobActive || i > cur)],
                 [colors.done, (i) => !bad.has(i) && jobActive && i < cur],
                 [colors.current, (i) => !bad.has(i) && jobActive && i === cur],
                 [colors.bad, (i) => bad.has(i)],
@@ -180,6 +214,17 @@ export function Preview() {
                 });
                 ctx.stroke();
             }
+        }
+        // зона печати
+        const zr = app.zoneMode.peek() && !jobActive ? zoneDraft.peek() ?? app.printZone.peek() : null;
+        if (zr) {
+            ctx.fillStyle = 'rgba(80,140,255,0.08)';
+            ctx.fillRect(zr[0], zr[1], zr[2] - zr[0], zr[3] - zr[1]);
+            ctx.strokeStyle = colors.current;
+            ctx.lineWidth = Math.max(0.3, px * 1.5);
+            ctx.setLineDash([3, 2]);
+            ctx.strokeRect(zr[0], zr[1], zr[2] - zr[0], zr[3] - zr[1]);
+            ctx.setLineDash([]);
         }
         // след симулятора
         if (simInk.segs.length && app.machine.conn.peek() === 'connected') {
@@ -250,6 +295,10 @@ export function Preview() {
     // перерисовка при изменениях
     effect(() => {
         shownPlan();
+        app.printLines.value;
+        app.zoneMode.value;
+        app.printZone.value;
+        zoneDraft.value;
         app.job.currentStroke.value;
         app.job.resumePoint.value;
         app.machine.wpos.value;
@@ -289,12 +338,30 @@ export function Preview() {
         view.value = { scale, ox: mx - (mx - v.ox) * kk, oy: my - (my - v.oy) * kk };
     };
     let drag = null;
+    const toPaper = (e) => {
+        const r = canvas.getBoundingClientRect();
+        const v = view.peek();
+        return [(e.clientX - r.left - v.ox) / v.scale, (e.clientY - r.top - v.oy) / v.scale];
+    };
+    let zoneStart = null;
     const onDown = (e) => {
         canvas.setPointerCapture(e.pointerId);
+        // режим «Зона»: левой кнопкой (или пальцем) — выделение, колесо и правая/средняя кнопка — как обычно
+        if (app.zoneMode.peek() && !pickMode.peek() && e.button === 0 && !app.job.active) {
+            zoneStart = toPaper(e);
+            zoneDraft.value = null;
+            return;
+        }
         const v = view.peek();
         drag = { x: e.clientX, y: e.clientY, ox: v.ox, oy: v.oy, moved: false };
     };
     const onMove = (e) => {
+        if (zoneStart) {
+            const [u, v] = toPaper(e);
+            const [a, b] = zoneStart;
+            zoneDraft.value = [Math.min(a, u), Math.min(b, v), Math.max(a, u), Math.max(b, v)];
+            return;
+        }
         if (!drag)
             return;
         const dx = e.clientX - drag.x;
@@ -305,6 +372,14 @@ export function Preview() {
             view.value = { ...view.peek(), ox: drag.ox + dx, oy: drag.oy + dy };
     };
     const onUp = (e) => {
+        if (zoneStart) {
+            const z = zoneDraft.peek();
+            zoneStart = null;
+            zoneDraft.value = null;
+            if (z && z[2] - z[0] > 2 && z[3] - z[1] > 2)
+                app.printZone.value = z.map((x) => Math.round(x * 10) / 10);
+            return;
+        }
         const d = drag;
         drag = null;
         if (!d || d.moved || !pickMode.peek())
@@ -349,7 +424,7 @@ export function Preview() {
     const pages = () => app.pageCount.value;
     const plan = () => shownPlan();
     return (h("div", { class: "preview", ref: (el) => (wrap = el) },
-        h("canvas", { ref: mountCanvas, class: () => (pickMode.value ? 'picking' : ''), onPointerDown: onDown, onPointerMove: onMove, onPointerUp: onUp, onDblClick: () => fit() }),
+        h("canvas", { ref: mountCanvas, class: () => (pickMode.value || app.zoneMode.value ? 'picking' : ''), onPointerDown: onDown, onPointerMove: onMove, onPointerUp: onUp, onDblClick: () => fit() }),
         h("div", { class: "preview-top" },
             h("div", { class: "pager" },
                 h("button", { class: "icon-btn", title: "\u041F\u0440\u0435\u0434\u044B\u0434\u0443\u0449\u0430\u044F \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0430", disabled: () => app.currentPage.value <= 0 || app.job.active, onClick: () => (app.currentPage.value = Math.max(0, app.currentPage.peek() - 1)) },
@@ -366,6 +441,10 @@ export function Preview() {
                     } }, "\u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u044C \u0441\u2026"),
                 h("button", { class: "icon-btn", title: "\u0412\u043F\u0438\u0441\u0430\u0442\u044C \u043B\u0438\u0441\u0442 (\u0434\u0432\u043E\u0439\u043D\u043E\u0439 \u0449\u0435\u043B\u0447\u043E\u043A)", onClick: () => fit() },
                     h(Icon, { name: "zoom", size: 16 })))),
+        () => app.zoneMode.value && !pickMode.value ? (h("div", { class: "pick-bar" },
+            h("span", null, () => app.printZone.value
+                ? 'Напечатается только то, что внутри рамки. Потяните заново, чтобы выбрать другую зону.'
+                : 'Потяните мышью или пальцем по листу — выделите зону, которую печатать.'))) : null,
         () => pickMode.value ? (h("div", { class: "pick-bar" }, () => picked.value === null ? (h("span", null, "\u0429\u0451\u043B\u043A\u043D\u0438\u0442\u0435 \u043F\u043E \u0431\u0443\u043A\u0432\u0435 \u043D\u0430 \u043B\u0438\u0441\u0442\u0435, \u0441 \u043A\u043E\u0442\u043E\u0440\u043E\u0439 \u043F\u0440\u043E\u0434\u043E\u043B\u0436\u0438\u0442\u044C \u043F\u0435\u0447\u0430\u0442\u044C.")) : (h("span", { class: "row" },
             h("span", null,
                 "\u0412\u044B\u0431\u0440\u0430\u043D \u0448\u0442\u0440\u0438\u0445 ",
@@ -395,7 +474,11 @@ export function Preview() {
                 h("span", { title: "\u041E\u0446\u0435\u043D\u043A\u0430 \u0432\u0440\u0435\u043C\u0435\u043D\u0438 \u044D\u0442\u043E\u0439 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u044B" },
                     "\u23F1 ",
                     fmtTime(pl.estSeconds)),
-                pl.outOfBounds.length ? h("span", { class: "legend-bad" },
+                (() => {
+                    const f = app.frame.value, pp = app.paper.value;
+                    return f.ready && (Math.abs(pp.width - f.width) > 1 || Math.abs(pp.height - f.height) > 1) ? (h("span", { class: "legend-bad", title: `Настоящий лист ${f.width.toFixed(1)}×${f.height.toFixed(1)} мм, в настройках бумаги ${pp.width}×${pp.height}. Вкладка «Бумага» → «Взять размер с калибровки».` }, "\u043B\u0438\u0441\u0442 \u2260 \u043A\u0430\u043B\u0438\u0431\u0440\u043E\u0432\u043A\u0435")) : null;
+                })(),
+                pl.outOfBounds.length ? h("span", { class: "legend-bad", title: "\u041F\u0440\u0438 \u043F\u0435\u0447\u0430\u0442\u0438 \u043F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0430 \u043F\u0440\u0435\u0434\u043B\u043E\u0436\u0438\u0442 \u043F\u0440\u043E\u043F\u0443\u0441\u0442\u0438\u0442\u044C \u0438\u0445" },
                     "\u0437\u0430 \u043A\u0440\u0430\u0435\u043C: ",
                     pl.outOfBounds.length) : null));
         })));

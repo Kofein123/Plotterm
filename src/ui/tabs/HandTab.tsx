@@ -8,6 +8,10 @@ import { Btn, Field, Icon, NumInput, Note, Section, Select, Segmented } from '..
 import { downloadText, pickFile, toast } from '../../app/notify.ts';
 import { importSvgFont } from '../../io/svgfont.ts';
 import { importOutlineFont } from '../../io/outlinefont.ts';
+import { gridCorners, templateSvg } from '../../io/template.ts';
+import { findMarks, readTemplate, type Gray, type TemplateReadResult } from '../../io/templateImport.ts';
+import { imageFileToGray } from '../../io/image.ts';
+import { addVariants } from '../../fonts/variants.ts';
 
 const GROUPS: Record<string, string> = {
   lower: 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя',
@@ -221,6 +225,17 @@ function Editor() {
   );
 }
 
+/** У шрифта из файла каждая буква одна — добавляем изогнутые копии, чтобы одинаковые буквы не совпадали. */
+async function makeVariants() {
+  const r = editing.peek();
+  if (!r) return;
+  const { glyphs, added } = addVariants(r.glyphs, CUSTOM_X_HEIGHT, 4);
+  if (!added) { toast('У всех букв уже есть по 4 варианта и больше.', 'info'); return; }
+  editing.value = { ...r, glyphs, updatedAt: Date.now() };
+  await persist();
+  toast(`Добавлено ${added} вариантов: теперь у каждой буквы по 4 начертания.`, 'ok', 7000);
+}
+
 async function exportFont() {
   const r = editing.peek();
   if (!r) return;
@@ -262,6 +277,132 @@ export async function importFont() {
   }
 }
 
+/** какой лист-шаблон печатаем и читаем: 3–5 — крупные (русские; қазақша, цифры, знаки; латиница), 1–2 — прежние мелкие */
+const sheetNo = signal(3);
+
+function downloadTemplate() {
+  downloadText(`plotterm-list-shablon-${sheetNo.peek()}.svg`, templateSvg(sheetNo.peek()), 'image/svg+xml');
+  toast('Распечатайте лист в масштабе 100 % («реальный размер»), заполните ручкой и сфотографируйте целиком сверху.', 'info', 9000);
+}
+
+/** Фото заполненного листа-шаблона → варианты букв в шрифт, который сейчас открыт (или в новый). */
+/** Метки не попали в кадр: человек сам отмечает на фото четыре угла таблицы. */
+const cornerPick = signal<{ gray: Gray; sheet: number; pts: [number, number][] } | null>(null);
+const CORNER_NAMES = ['левый верхний угол таблицы', 'правый верхний', 'правый нижний (под последней полной строкой)', 'левый нижний'];
+
+export async function importTemplatePhoto() {
+  const f = await pickFile('image/*');
+  if (!f) return;
+  try {
+    importBusy.value = 'Читаю фото листа…';
+    const gray = await imageFileToGray(f);
+    importBusy.value = 'Ищу метки и снимаю буквы…';
+    await new Promise((r) => setTimeout(r, 0));
+    const marks = findMarks(gray);
+    if (!marks) {
+      cornerPick.value = { gray, sheet: sheetNo.peek(), pts: [] };
+      toast('Чёрные метки не видны — отметьте на фото четыре угла таблицы с буквами.', 'info', 9000);
+      return;
+    }
+    await applyTemplate(readTemplate(gray, marks, undefined, sheetNo.peek()));
+  } catch (e: any) {
+    toast('Не получилось прочитать лист: ' + (e?.message ?? e), 'err');
+  } finally {
+    importBusy.value = null;
+  }
+}
+
+async function applyTemplate(res: TemplateReadResult) {
+  if (res.filled < 3) throw new Error('на листе почти нет букв — проверьте, что фото резкое и без бликов');
+  let rec = editing.peek();
+  if (!rec) {
+    rec = { id: 'custom-' + Date.now().toString(36), name: 'Мой почерк', baseFontId: 'gost-b', glyphs: {}, letterSpacing: 12, wordSpacing: 110, updatedAt: Date.now() };
+  }
+  const glyphs = { ...rec.glyphs };
+  for (const [ch, vs] of Object.entries(res.glyphs)) glyphs[ch] = [...(glyphs[ch] ?? []), ...vs];
+  rec = { ...rec, glyphs };
+  await saveCustomFont(rec);
+  editing.value = structuredClone(rec);
+  app.typo.patch({ fontId: rec.id });
+  toast(`С листа снято ${res.filled} букв, шрифт «${rec.name}» выбран. Каждый новый лист добавляет варианты.`, 'ok', 9000);
+}
+
+async function finishCorners() {
+  const p = cornerPick.peek();
+  if (!p || p.pts.length < 4) return;
+  try {
+    importBusy.value = 'Снимаю буквы…';
+    await new Promise((r) => setTimeout(r, 0));
+    await applyTemplate(readTemplate(p.gray, p.pts, gridCorners(p.sheet), p.sheet));
+    cornerPick.value = null;
+  } catch (e: any) {
+    toast('Не получилось прочитать лист: ' + (e?.message ?? e), 'err');
+  } finally {
+    importBusy.value = null;
+  }
+}
+
+function CornerPicker() {
+  const p = cornerPick.peek()!;
+  const k = Math.min(1, 1400 / Math.max(p.gray.w, p.gray.h));
+  const w = Math.round(p.gray.w * k), hh = Math.round(p.gray.h * k);
+  let canvas!: HTMLCanvasElement;
+  const draw = () => {
+    const ctx = canvas.getContext('2d')!;
+    const img = ctx.createImageData(w, hh);
+    for (let y = 0; y < hh; y++)
+      for (let x = 0; x < w; x++) {
+        const v = p.gray.data[Math.floor(y / k) * p.gray.w + Math.floor(x / k)];
+        const i = (y * w + x) * 4;
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+        img.data[i + 3] = 255;
+      }
+    ctx.putImageData(img, 0, 0);
+    const pts = cornerPick.value?.pts ?? [];
+    ctx.strokeStyle = '#e5484d';
+    ctx.fillStyle = '#e5484d';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * k, y * k) : ctx.moveTo(x * k, y * k)));
+    if (pts.length === 4) ctx.closePath();
+    ctx.stroke();
+    for (const [x, y] of pts) {
+      ctx.beginPath();
+      ctx.arc(x * k, y * k, 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+  effect(() => { cornerPick.value; if (canvas) draw(); });
+  return (
+    <div class="corner-pick">
+      <Note kind="info">
+        {() => {
+          const n = cornerPick.value?.pts.length ?? 0;
+          return n < 4 ? `Нажмите ${n + 1}-й угол: ${CORNER_NAMES[n]}.` : 'Углы отмечены — можно снимать буквы.';
+        }}
+      </Note>
+      <canvas
+        class="corner-canvas"
+        width={w}
+        height={hh}
+        ref={(el: HTMLCanvasElement) => { canvas = el; requestAnimationFrame(draw); }}
+        onPointerDown={(e: PointerEvent) => {
+          const cur = cornerPick.peek();
+          if (!cur || cur.pts.length >= 4) return;
+          const r = canvas.getBoundingClientRect();
+          const x = ((e.clientX - r.left) / r.width) * w / k, y = ((e.clientY - r.top) / r.height) * hh / k;
+          cornerPick.value = { ...cur, pts: [...cur.pts, [x, y]] };
+        }}
+      />
+      <div class="row wrap">
+        <Btn small kind="primary" onClick={finishCorners} disabled={() => (cornerPick.value?.pts.length ?? 0) < 4 || !!importBusy.value}>Снять буквы</Btn>
+        <Btn small onClick={() => { const c = cornerPick.peek(); if (c) cornerPick.value = { ...c, pts: c.pts.slice(0, -1) }; }} disabled={() => !cornerPick.value?.pts.length}>Убрать точку</Btn>
+        <Btn small kind="ghost" onClick={() => { cornerPick.value = null; }}>Отмена</Btn>
+      </div>
+    </div>
+  );
+}
+
 export function HandTab() {
   return (
     <div class="tab">
@@ -299,7 +440,26 @@ export function HandTab() {
             <Icon name="upload" size={14} /> Загрузить шрифт (.ttf .otf .woff)
           </Btn>
           {() => (editing.value ? <Btn small kind="ghost" onClick={exportFont}><Icon name="download" size={14} /> Экспорт</Btn> : null)}
+          {() => (editing.value ? <Btn small kind="ghost" onClick={makeVariants} title="Каждая буква получит 4 слегка разных начертания — живее для шрифтов из .ttf">Варианты букв ×4</Btn> : null)}
         </div>
+        <div class="muted small">
+          Проще всего — лист-шаблон: распечатать, написать по букве в клетке своей ручкой, сфотографировать.
+          Каждый заполненный лист добавляет ещё один вариант каждой буквы. Крупные листы А, Б, В снимаются точнее;
+          для живого почерка заполните лист А 2–4 раза, листы Б и В — по разу.
+        </div>
+        <Segmented
+          small
+          value={() => sheetNo.value}
+          onChange={(v) => { sheetNo.value = v; }}
+          options={[{ value: 3, label: 'А · русские' }, { value: 4, label: 'Б · қазақша, цифры, знаки' }, { value: 5, label: 'В · латиница' }, { value: 1, label: 'мелкий 1' }, { value: 2, label: 'мелкий 2' }]}
+        />
+        <div class="row wrap">
+          <Btn small onClick={downloadTemplate}><Icon name="download" size={14} /> Лист-шаблон А4</Btn>
+          <Btn small kind="primary" onClick={importTemplatePhoto} disabled={() => !!importBusy.value} title="JPEG или PNG; лист целиком, четыре чёрные метки по углам должны быть видны">
+            <Icon name="upload" size={14} /> Фото заполненного листа
+          </Btn>
+        </div>
+        {() => (cornerPick.value ? <CornerPicker /> : null)}
       </Section>
       {() =>
         hasEditing.value ? (

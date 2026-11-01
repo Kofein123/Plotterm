@@ -1,7 +1,7 @@
 // Ручное перемещение: XY стрелками, Z (ручка) вверх/вниз, шаг, положение.
 import { h } from './dom.ts';
 import { app } from '../app/state.ts';
-import { jogStep, jogZ, jogContinuousStart, jogContinuousStop, penUp, penDown, goZero, clampJog } from '../app/actions.ts';
+import { jogStep, jogZ, jogContinuousStart, jogContinuousStop, penUp, penDown, goZero, clampJog, calibFlipAxis, calibSwapAxes } from '../app/actions.ts';
 import { workToPaper } from '../core/calibration.ts';
 import { Icon, Segmented, Toggle } from './components.tsx';
 
@@ -103,7 +103,17 @@ export function Jog(props: { compact?: boolean }) {
         app.calib.value.cornerSet ? (
           <Toggle value={() => clampJog.value} onChange={(v) => (clampJog.value = v)} label="Не выезжать за лист" hint="После калибровки каретка не уйдёт за границы листа" />
         ) : (
-          <div class="muted small">До калибровки стрелки двигают оси станка напрямую — осторожно у краёв.</div>
+          <div class="jog-flip">
+            <div class="muted small">
+              До калибровки — осторожно у краёв. Каретка поехала не туда, куда стрелка? Если ← → двигают ручку вверх-вниз по тетради —
+              «Повернуть оси»; если просто в обратную сторону — переверните ось.
+            </div>
+            <div class="row wrap">
+              <button class="btn btn-small" title="Тетрадь стоит поперёк осей станка" onClick={() => calibSwapAxes()}>↻ Повернуть оси</button>
+              <button class="btn btn-small" title="← и → поменяются местами" onClick={() => calibFlipAxis(0)}>⇆ лево/право</button>
+              <button class="btn btn-small" title="↑ и ↓ поменяются местами" onClick={() => calibFlipAxis(1)}>⇅ верх/низ</button>
+            </div>
+          </div>
         )
       }
     </div>
