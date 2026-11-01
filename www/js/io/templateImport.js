@@ -56,7 +56,7 @@ function percentile(values, p) {
     return 255;
 }
 /** Найти четыре угловые метки. Порядок как в MARKS: левый верхний, правый верхний, правый нижний, левый нижний. */
-export function findMarks(g) {
+export function findMarks(g, ref = MARKS) {
     // работаем на уменьшенной копии: метки крупные
     const step = Math.max(1, Math.ceil(Math.max(g.w, g.h) / 1200));
     const W = Math.floor(g.w / step), H = Math.floor(g.h / step);
@@ -69,6 +69,41 @@ export function findMarks(g) {
     const dark = new Uint8Array(W * H);
     for (let i = 0; i < dark.length; i++)
         dark[i] = small[i] < thr ? 1 : 0;
+    // полоса от принтера или край стола может касаться метки и сливаться с ней в одно пятно. Сжимаем тёмное
+    // на ERODE пикселей: тонкие линии исчезают, метка остаётся квадратом чуть меньше (центр тот же)
+    const ERODE = 2;
+    for (let k = 0; k < ERODE; k++) {
+        const prev = dark.slice();
+        for (let y = 0; y < H; y++)
+            for (let x = 0; x < W; x++) {
+                const i = y * W + x;
+                if (prev[i] && (x === 0 || y === 0 || x === W - 1 || y === H - 1 || !prev[i - 1] || !prev[i + 1] || !prev[i - W] || !prev[i + W]))
+                    dark[i] = 0;
+            }
+    }
+    // вокруг настоящей метки — бумага; тёмные пятна на столе, тени и края кадра этого не проходят
+    const ringLight = (x0, y0, x1, y1) => {
+        const m = Math.max(3, Math.round((x1 - x0) * 0.5));
+        let n = 0, light = 0, all = 0;
+        const at = (x, y) => {
+            all++;
+            if (x < 0 || y < 0 || x >= W || y >= H)
+                return; // за краем кадра — не знаем, не считаем
+            n++;
+            if (small[y * W + x] > thr)
+                light++;
+        };
+        for (let x = x0 - m; x <= x1 + m; x++) {
+            at(x, y0 - m);
+            at(x, y1 + m);
+        }
+        for (let y = y0 - m; y <= y1 + m; y++) {
+            at(x0 - m, y);
+            at(x1 + m, y);
+        }
+        // метка, обрезанная краем кадра больше чем наполовину, — скорее тёмный угол стола
+        return n >= all * 0.6 ? light / n : 0;
+    };
     // ожидаемый размер метки: 8 мм из 210 мм ширины листа, лист занимает 40–100 % кадра
     const big = Math.max(W, H);
     const minSide = big * (MARK_SIZE / 297) * 0.3;
@@ -113,38 +148,74 @@ export function findMarks(g) {
                 stack.push(c + W);
             }
         }
-        const bw = maxX - minX + 1, bh = maxY - minY + 1;
+        const bw = maxX - minX + 1 + 2 * ERODE, bh = maxY - minY + 1 + 2 * ERODE;
         if (bw < minSide || bh < minSide || bw > maxSide || bh > maxSide)
             continue;
         if (bw / bh < 0.55 || bw / bh > 1.8)
             continue;
-        if (n / (bw * bh) < 0.6)
+        if (n / ((bw - 2 * ERODE) * (bh - 2 * ERODE)) < 0.6)
             continue;
-        cands.push({ x: (sx / n + 0.5) * step, y: (sy / n + 0.5) * step });
+        if (ringLight(minX - ERODE, minY - ERODE, maxX + ERODE, maxY + ERODE) < 0.75)
+            continue;
+        {
+            // центр — по исходным (не сжатым) тёмным пикселям рамки метки: сжатие в перспективе чуть сдвигает центр
+            let m = 0, mx = 0, my = 0;
+            for (let y = Math.max(0, minY - ERODE - 1); y <= Math.min(H - 1, maxY + ERODE + 1); y++)
+                for (let x = Math.max(0, minX - ERODE - 1); x <= Math.min(W - 1, maxX + ERODE + 1); x++)
+                    if (small[y * W + x] < thr) {
+                        m++;
+                        mx += x;
+                        my += y;
+                    }
+            cands.push({ x: (mx / m + 0.5) * step, y: (my / m + 0.5) * step, side: Math.sqrt(n) });
+        }
     }
     if (cands.length < 4)
         return null;
+    // у каждого угла кадра — несколько ближайших пятен; из них выбираем четвёрку, похожую на метки листа:
+    // одинакового размера, выпуклую, с отношением сторон как у листа (186 × 273 мм). Тёмный угол стола у края
+    // кадра бывает ближе к углу, чем сама метка, — по одной близости его не отличить.
     const corners = [[0, 0], [g.w, 0], [g.w, g.h], [0, g.h]];
-    const out = [];
-    const used = new Set();
-    for (const [cx, cy] of corners) {
-        let best = -1, bd = Infinity;
-        cands.forEach((c, i) => {
-            const d = Math.hypot(c.x - cx, c.y - cy);
-            if (!used.has(i) && d < bd) {
-                bd = d;
-                best = i;
+    const near = corners.map(([cx, cy]) => cands.map((_, i) => i).sort((a, b) => Math.hypot(cands[a].x - cx, cands[a].y - cy) - Math.hypot(cands[b].x - cx, cands[b].y - cy)).slice(0, 4));
+    const [rw, rh] = [ref[1][0] - ref[0][0], ref[3][1] - ref[0][1]];
+    let best = null, bestScore = Infinity;
+    const pick = [0, 0, 0, 0];
+    const score = (q) => {
+        if (new Set(q).size < 4)
+            return Infinity;
+        const P = q.map((i) => cands[i]);
+        for (let i = 0; i < 4; i++) {
+            const a = P[i], b = P[(i + 1) % 4], c = P[(i + 2) % 4];
+            if ((b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x) <= 0)
+                return Infinity;
+        }
+        const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+        const ratio = (d(P[0], P[1]) + d(P[3], P[2])) / (d(P[0], P[3]) + d(P[1], P[2]));
+        const ls = P.map((p) => Math.log(p.side));
+        const mean = ls.reduce((a, b) => a + b, 0) / 4;
+        const spread = Math.sqrt(ls.reduce((a, b) => a + (b - mean) ** 2, 0) / 4);
+        // размер метки относительно расстояния между метками тоже известен
+        const sideMm = (Math.exp(mean) * step) / ((d(P[0], P[1]) + d(P[3], P[2])) / 2 / rw);
+        return Math.abs(Math.log(ratio / (rw / rh))) * 3 + spread * 2 + Math.abs(Math.log(sideMm / MARK_SIZE));
+    };
+    const rec = (k) => {
+        if (k === 4) {
+            const v = score(pick);
+            if (v < bestScore) {
+                bestScore = v;
+                best = pick.slice();
             }
-        });
-        used.add(best);
-        out.push([cands[best].x, cands[best].y]);
-    }
-    // метки должны образовывать выпуклый четырёхугольник в правильном порядке (по часовой на фото)
-    for (let i = 0; i < 4; i++) {
-        const [ax, ay] = out[i], [bx, by] = out[(i + 1) % 4], [cx, cy] = out[(i + 2) % 4];
-        if ((bx - ax) * (cy - by) - (by - ay) * (cx - bx) <= 0)
-            return null;
-    }
+            return;
+        }
+        for (const i of near[k]) {
+            pick[k] = i;
+            rec(k + 1);
+        }
+    };
+    rec(0);
+    if (!best || bestScore > 1.5)
+        return null;
+    const out = best.map((i) => [cands[i].x, cands[i].y]);
     return out;
 }
 /** пикселей на мм при вырезании клетки */
@@ -169,6 +240,12 @@ function cellLum(g, H, cell) {
  * тянутся на всю ширину и дают острые «гребни» в профиле яркости, буквы — нет.
  */
 export function cellShift(g, H, cell, SHIFT = 2.5) {
+    const [dx, dy] = cellLines(g, H, cell, SHIFT);
+    return [dx, dy];
+}
+/** Чёткость печатных линий клетки на расчётном месте: чем выше, тем точнее клетка совпала с фото. */
+export const lineScore = (g, H, cell) => cellLines(g, H, cell, 0)[2];
+function cellLines(g, H, cell, SHIFT) {
     const R = 5; // пикс/мм — для поиска линий хватает
     const top = cell.y - LABEL_H;
     const x0 = cell.x - SHIFT - 1, y0 = top - SHIFT - 1;
@@ -190,6 +267,7 @@ export function cellShift(g, H, cell, SHIFT = 2.5) {
         const c = Math.max(at(i - 1), at(i), at(i + 1));
         return c - (at(i - 4) + at(i + 4)) / 2;
     };
+    let score = 0;
     const best = (p, lines) => {
         let bs = 0, bv = -Infinity, zero = 0;
         for (let s = -SHIFT; s <= SHIFT + 1e-9; s += 1 / R) {
@@ -202,11 +280,13 @@ export function cellShift(g, H, cell, SHIFT = 2.5) {
             }
         }
         // сдвигаем, только если линии на новом месте заметно чётче, чем на расчётном
-        return bv > zero * 1.15 + 1e-9 ? bs : 0;
+        const move = bv > zero * 1.15 + 1e-9;
+        score += move ? bv : zero;
+        return move ? bs : 0;
     };
     const dx = best(col, [cell.x - x0, cell.x + cell.w - x0]);
     const dy = best(row, [top - y0, cell.baseline - y0, cell.y + cell.h - y0]);
-    return [dx, dy];
+    return [dx, dy, score];
 }
 function flatten(lum, W, H, r) {
     const tmp = new Uint8Array(W * H), bg = new Uint8Array(W * H);
@@ -753,6 +833,71 @@ function alignBaselines(cells) {
 }
 const FIT_RANGE = 3;
 /**
+ * Загнутый угол листа сдвигает клетки на сантиметр и больше — за пределы поиска одной клетки. Идём от клеток
+ * у меток (там фото выпрямлено точно) к соседям: сдвиг соседа — подсказка, вокруг неё ищем линии клетки.
+ * Так набегает любой плавный изгиб, лишь бы между соседними клетками он менялся меньше чем на 2,5 мм.
+ */
+export function growShifts(g, H, cells, marks) {
+    const shift = cells.map(() => null);
+    // соседи по сетке: клетка, сдвинутая на (di, dj) ячеек
+    const at = new Map();
+    const key = (c) => `${Math.round(c.x / c.w)},${Math.round((c.y - LABEL_H) / (c.h + LABEL_H))}`;
+    const ij = cells.map((c) => [Math.round(c.x / c.w), Math.round((c.y - LABEL_H) / (c.h + LABEL_H))]);
+    cells.forEach((c, i) => at.set(key(c), i));
+    const cell = (i, di, dj) => at.get(`${ij[i][0] + di},${ij[i][1] + dj}`);
+    const solve = (i, pred, range) => {
+        const c = cells[i];
+        const moved = { ...c, x: c.x + pred[0], y: c.y + pred[1], baseline: c.baseline + pred[1] };
+        const [dx, dy] = cellShift(g, H, moved, range);
+        shift[i] = [pred[0] + dx, pred[1] + dy];
+    };
+    // начало — клетки, ближайшие к меткам: там фото выпрямлено точно
+    for (const [mx, my] of marks) {
+        let best = -1, bd = Infinity;
+        cells.forEach((c, i) => {
+            const d = Math.hypot(c.x + c.w / 2 - mx, c.y + c.h / 2 - my);
+            if (d < bd) {
+                bd = d;
+                best = i;
+            }
+        });
+        if (best >= 0 && !shift[best])
+            solve(best, [0, 0], 1);
+    }
+    const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (;;) {
+        // следующая — у которой больше всего найденных соседей; сдвиг продолжаем по прямой от двух соседей
+        let pick = -1, pn = 0;
+        let preds = [];
+        cells.forEach((_, i) => {
+            if (shift[i])
+                return;
+            const p = [];
+            for (const [di, dj] of DIRS) {
+                const a = cell(i, di, dj);
+                if (a === undefined || !shift[a])
+                    continue;
+                const b = cell(i, 2 * di, 2 * dj);
+                const sa = shift[a];
+                p.push(b !== undefined && shift[b] ? [sa[0] + (sa[0] - shift[b][0]) * 0.7, sa[1] + (sa[1] - shift[b][1]) * 0.7] : sa);
+            }
+            if (p.length > pn) {
+                pn = p.length;
+                pick = i;
+                preds = p;
+            }
+        });
+        if (pick < 0)
+            break;
+        const med = (d) => {
+            const v = preds.map((p) => p[d]).sort((a, b) => a - b);
+            return v.length % 2 ? v[v.length >> 1] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2;
+        };
+        solve(pick, [med(0), med(1)], 1.2);
+    }
+    return shift.map((s) => s ?? [0, 0]);
+}
+/**
  * Сдвиги отдельных клеток шумят (буква у края, пятно), а изгиб листа плавный. Приближаем их
  * квадратичной поверхностью по всей таблице, дважды отбрасывая выбросы; упёршиеся в край поиска не берём.
  */
@@ -817,6 +962,8 @@ const X_LETTERS = new Set([...'аеиклмнопстхчшыьэюяжгәңөa
 const CAPS = new Set([...'АБВГЕЖЗИКЛМНОПРСТУФХЧШЫЭЮЯABCDEFGHIKLMNOPRSTUVWXYZ']);
 /** у человека в конспектах прописные ≈ 1,6 строчной; в клетке шаблона их часто пишут мельче */
 const CAP_RATIO = 1.6;
+const DIGIT_SET = new Set([...'0123456789']);
+const DIGIT_RATIO = 1.4;
 /**
  * В шрифте x-высота — 100 единиц, а человек на листе пишет мельче или крупнее пунктира. Масштабируем весь лист
  * так, чтобы средняя строчная стала 100, а слишком мелкие прописные дотягиваем до CAP_RATIO.
@@ -839,12 +986,15 @@ function normalizeSizes(cells) {
     const cap = median(CAPS);
     const k = 100 / xh;
     const capK = cap && cap / xh < CAP_RATIO - 0.25 ? (CAP_RATIO * xh) / cap : 1;
+    // цифры в клетке тоже часто пишут ростом со строчную, а в тетради они почти как прописные
+    const dig = median(DIGIT_SET);
+    const digK = dig && dig / xh < DIGIT_RATIO - 0.2 ? (DIGIT_RATIO * xh) / dig : 1;
     const r = (v) => Math.round(v * 10) / 10;
     for (const c of cells) {
         if (!c.glyph)
             continue;
         const g = c.glyph;
-        const f = k * (/\p{Lu}/u.test(c.ch) ? capK : 1);
+        const f = k * (/\p{Lu}/u.test(c.ch) ? capK : DIGIT_SET.has(c.ch) ? digK : 1);
         g.s = g.s.map((st) => st.map((v) => r(v * f)));
         g.w = r(g.w * f);
         if (g.i)
@@ -863,10 +1013,16 @@ export function readTemplate(g, at, ref = MARKS, sheet = 1) {
         throw new Error('не нашёл четыре чёрные метки по углам листа — снимите лист целиком, сверху, без теней');
     const H = homography(ref, m);
     const tc = templateCells(sheet);
+    const grown = growShifts(g, H, tc, ref);
     const fit = fitShifts(tc, tc.map((c) => cellShift(g, H, c, FIT_RANGE)));
-    const cells = tc.map((c) => {
-        // плавный изгиб листа по всей таблице + небольшое уточнение по линиям самой клетки
-        const [fx, fy] = fit(c);
+    const cells = tc.map((c, i) => {
+        // плавный изгиб листа по всей таблице + небольшое уточнение по линиям самой клетки. Если лист сильно
+        // загнут (угол приподнят над столом), клетки уезжают дальше FIT_RANGE — тогда берём сдвиг, найденный «по цепочке»
+        const f = fit(c);
+        const big = Math.abs(grown[i][0]) >= FIT_RANGE - 0.5 || Math.abs(grown[i][1]) >= FIT_RANGE - 0.5;
+        const at = (s) => lineScore(g, H, { ...c, x: c.x + s[0], y: c.y + s[1], baseline: c.baseline + s[1] });
+        // «по цепочке» можно и ошибиться: берём его, только если линии клетки там заметно чётче
+        const [fx, fy] = big && at(grown[i]) > at(f) * 1.2 ? grown[i] : f;
         const moved = { ...c, x: c.x + fx, y: c.y + fy, baseline: c.baseline + fy };
         const [dx, dy] = cellShift(g, H, moved, 0.8);
         return { ch: c.ch, glyph: readCell(g, H, { ...moved, x: moved.x + dx, y: moved.y + dy, baseline: moved.baseline + dy }) };

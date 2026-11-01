@@ -2,7 +2,7 @@ import gostA from "./data/gostA.js";
 import gostB from "./data/gostB.js";
 import propis from "./data/propis.js";
 import { synthesizeKazakh } from "./kazakh.js";
-import { deformGlyph } from "./variants.js";
+import { deformGlyph, dropOutliers } from "./variants.js";
 function fromData(d) {
     const glyphs = new Map();
     for (const [ch, g] of Object.entries(d.glyphs))
@@ -163,9 +163,110 @@ export function dropBaselineSpecks(g, xh) {
     }
     return out;
 }
+/** буквы, у которых отдельные короткие штрихи — часть буквы (точки, кратка) */
+const HAS_MARKS = new Set([...'йЙёЁіІiјjJ!?:;%№ыЫ']);
+/**
+ * Обрывки печатных линий и соседних букв, попавшие в клетку: короткий штрих далеко от буквы или длинная ровная
+ * горизонталь, торчащая за букву (кусок направляющей). У букв с точками короткие штрихи не трогаем.
+ */
+export function dropStrays(g, xh, ch) {
+    if (g.s.length < 2)
+        return g;
+    const info = g.s.map((st) => {
+        let len = 0, x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (let i = 0; i < st.length; i += 2) {
+            x0 = Math.min(x0, st[i]);
+            x1 = Math.max(x1, st[i]);
+            y0 = Math.min(y0, st[i + 1]);
+            y1 = Math.max(y1, st[i + 1]);
+            if (i)
+                len += Math.hypot(st[i] - st[i - 2], st[i + 1] - st[i - 1]);
+        }
+        return { len, x0, x1, y0, y1 };
+    });
+    const dist = (a, b) => {
+        let m = Infinity;
+        for (let i = 0; i < a.length; i += 2)
+            for (let j = 0; j < b.length; j += 2)
+                m = Math.min(m, Math.hypot(a[i] - b[j], a[i + 1] - b[j + 1]));
+        return m;
+    };
+    const keep = g.s.map(() => true);
+    // самый длинный штрих — основа буквы; к ней цепляем всё, что ближе 0,25 x-высоты (и так далее по цепочке)
+    const main = info.reduce((b, c, i) => (c.len > info[b].len ? i : b), 0);
+    const core = new Set([main]);
+    for (let grow = true; grow;) {
+        grow = false;
+        g.s.forEach((st, i) => {
+            if (core.has(i))
+                return;
+            if ([...core].some((j) => dist(st, g.s[j]) <= xh * 0.25)) {
+                core.add(i);
+                grow = true;
+            }
+        });
+    }
+    g.s.forEach((st, i) => {
+        if (i === main)
+            return;
+        const f = info[i];
+        const others = g.s.filter((_, j) => j !== i && keep[j]);
+        if (!others.length)
+            return;
+        const ox0 = Math.min(...info.filter((_, j) => j !== i && keep[j]).map((o) => o.x0));
+        const ox1 = Math.max(...info.filter((_, j) => j !== i && keep[j]).map((o) => o.x1));
+        const flat = f.y1 - f.y0 < xh * 0.1 && f.x1 - f.x0 > f.len * 0.85;
+        // выше 2,4 x-высоты не поднимается ни одна буква (кратка у Й — ниже): это подпись или линия соседней клетки
+        if (f.y0 > xh * 2.4) {
+            keep[i] = false;
+            return;
+        }
+        // направляющая: ровная горизонталь на уровне печатной линии, далеко торчит за букву (перекладина Т — выше)
+        const onGuide = Math.abs(f.y0) < xh * 0.15 || f.y0 > xh * 1.9 || f.y1 < -xh * 0.3;
+        if (flat && onGuide && f.len > xh * 0.8 && (f.x0 < ox0 - xh * 0.5 || f.x1 > ox1 + xh * 0.5)) {
+            keep[i] = false;
+            return;
+        }
+        if (HAS_MARKS.has(ch))
+            return;
+        // до основы буквы, а не до соседнего обрывка: два кусочка пунктира рядом друг друга не спасают
+        const d = core.has(i) ? 0 : Math.min(...[...core].map((j) => dist(st, g.s[j])));
+        if ((f.len < xh * 0.45 && d > xh * 0.25) || (flat && f.len < xh * 0.8 && d > xh * 0.3))
+            keep[i] = false;
+        // подпись клетки (серая буква в углу) — над прописными или под хвостами, отдельно от буквы
+        else if (f.len < xh * 1.2 && d > xh * 0.3 && (f.y0 > xh * 1.75 || f.y1 < -xh * 1.1))
+            keep[i] = false;
+    });
+    if (keep.every(Boolean))
+        return g;
+    const out = { ...g, s: g.s.filter((_, i) => keep[i]) };
+    if (g.oi !== undefined) {
+        if (!keep[g.oi])
+            delete out.oi;
+        else
+            out.oi = keep.slice(0, g.oi).filter(Boolean).length;
+    }
+    // ширина буквы считалась вместе с мусором — без него буква уже, иначе в слове останется дыра
+    const ox0 = Math.min(...info.map((f) => f.x0)), ox1 = Math.max(...info.map((f) => f.x1));
+    const k = info.filter((_, i) => keep[i]);
+    const nx0 = Math.min(...k.map((f) => f.x0)), nx1 = Math.max(...k.map((f) => f.x1));
+    const dx = nx0 - ox0;
+    if (dx > 0.5 || ox1 - nx1 > 0.5) {
+        const r = (v) => Math.round(v * 10) / 10;
+        out.s = out.s.map((st) => st.map((v, j) => (j % 2 ? v : r(v - dx))));
+        out.w = r(Math.max(1, g.w - dx - (ox1 - nx1)));
+        if (out.i)
+            out.i = [r(out.i[0] - dx), out.i[1]];
+        if (out.o)
+            out.o = [r(out.o[0] - dx), out.o[1]];
+    }
+    return out;
+}
 function prepareGlyph(g, ch) {
     if (/\p{L}/u.test(ch))
         g = dropBaselineSpecks(g, CUSTOM_X_HEIGHT);
+    if (/[\p{L}\p{N}]/u.test(ch))
+        g = dropStrays(g, CUSTOM_X_HEIGHT, ch);
     // у снятых с шаблона букв уже есть точки входа/выхода и порядок штрихов — их не трогаем
     if (g.i || g.o)
         return g;
@@ -220,7 +321,7 @@ export function fromCustom(rec, all = BUILTIN_FONTS) {
     const glyphs = new Map();
     for (const [ch, vs] of Object.entries(rec.glyphs))
         if (vs.length)
-            glyphs.set(ch, vs.map((g) => prepareGlyph(g, ch)));
+            glyphs.set(ch, dropOutliers(vs.map((g) => prepareGlyph(g, ch))));
     // казахские буквы, ё и √ — достраиваем из своих же букв, чтобы стиль не смешивался
     const metrics = { xHeight: CUSTOM_X_HEIGHT, capHeight: CUSTOM_X_HEIGHT * (base.capHeight / base.xHeight), descender: CUSTOM_X_HEIGHT * (base.descender / base.xHeight) };
     synthesizeKazakh(glyphs, metrics);

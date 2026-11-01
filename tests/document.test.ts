@@ -1,7 +1,8 @@
 // Лекция из файла: разметка рисунков и таблиц, вёрстка, разбор PDF-строк, перевод картинки в линии.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BUILTIN_FONTS, autoJoin, mergeTouching, resolveGlyph, dropBaselineSpecks } from '../src/fonts/fonts.ts';
+import { BUILTIN_FONTS, autoJoin, mergeTouching, resolveGlyph, dropBaselineSpecks, dropStrays } from '../src/fonts/fonts.ts';
+import { dropOutliers } from '../src/fonts/variants.ts';
 import { layoutText } from '../src/core/layout.ts';
 import { parseMarkup } from '../src/core/markup.ts';
 import { structure, imageBoxes, type TextItem } from '../src/io/document.ts';
@@ -180,4 +181,22 @@ test('связка для .ttf: вход слева, выход справа в�
   // буква без подходящих концов не меняется
   const o = { w: 60, s: [[30, 50, 30, 60]] };
   assert.equal(autoJoin(o, 100), o);
+});
+
+test('обрывки линий и подписи клеток убираются из буквы, точки у й и ё остаются', () => {
+  const body = [0, 0, 20, 100, 40, 0];
+  const g = { w: 120, s: [body, [0, 164, 16, 164], [24, 164, 40, 164], [10, 300, 20, 330], [-60, 2, 110, 2]] };
+  const out = dropStrays(g, 100, 'а');
+  assert.equal(out.s.length, 1);
+  assert.ok(out.w < 60, `ширина без мусора: ${out.w}`);
+  const yo = { w: 40, s: [body, [5, 130, 6, 131], [30, 130, 31, 131]] };
+  assert.equal(dropStrays(yo, 100, 'ё').s.length, 3);
+});
+
+test('испорченный вариант буквы (чужой кусок, сдвиг) отбрасывается', () => {
+  const ok = (dx: number) => ({ w: 60, s: [[0, 0, 30 + dx, 100, 60, 0]] });
+  const shifted = { w: 60, s: [[0, -200, 30, -100, 60, -200]] };
+  const out = dropOutliers([ok(0), ok(3), ok(-2), shifted]);
+  assert.equal(out.length, 3);
+  assert.ok(!out.includes(shifted));
 });
