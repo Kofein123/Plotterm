@@ -1,9 +1,11 @@
 import { h } from '../dom.ts';
 import { app, SAMPLE_TEXT, saveImages, type SubjectProfile } from '../../app/state.ts';
 import { docxToDocument, missingImages, pdfToDocument } from '../../io/document.ts';
-import { vectorize } from '../../io/vectorize.ts';
+import { vectorize, type VectorMode, type VectorDrawing } from '../../io/vectorize.ts';
+import type { Gray } from '../../io/templateImport.ts';
+import { signal } from '../reactive.ts';
 import { imageFileToGray } from '../../io/image.ts';
-import { Btn, Icon, Note, Section } from '../components.tsx';
+import { Btn, Icon, Note, Section, Segmented } from '../components.tsx';
 import { readTextFile, svgToStrokes } from '../../io/importers.ts';
 import { pickFile, toast, fmtTime } from '../../app/notify.ts';
 
@@ -41,16 +43,51 @@ async function importText() {
 
 /** Картинка (фото схемы, скриншот) → линии; в текст вставляется строка-рисунок. */
 async function insertPicture(insert: (s: string) => void) {
-  const f = await pickFile('image/*');
+  const f = await pickFile('image/*,.svg');
   if (!f) return;
   try {
     const g = await imageFileToGray(f, 1800);
-    const d = vectorize(g);
+    const d = vectorize(g, { mode: 'auto' });
     if (!d.paths.length) return toast('На картинке не нашлось линий.', 'warn');
     const id = 'r' + Date.now().toString(36);
     await saveImages([{ id, name: f.name, ...d }]);
     insert(`\n![](img:${id} 70%)\n`);
     toast(`Рисунок «${f.name}»: ${d.paths.length} линий. В строке можно поменять ширину (70 %) и добавить «карандаш» или «место».`, 'ok', 8000);
+  } catch (e: any) {
+    toast('Не удалось открыть картинку: ' + (e?.message ?? e), 'err');
+  }
+}
+
+const picMode = signal<VectorMode>('auto');
+/** последняя загруженная картинка — чтобы пересчитать её при смене режима без повторного выбора файла */
+let lastPic: { name: string; g: Gray } | null = null;
+
+/** Рисунок (доли ширины) → штрихи в мм, вписанные в поля листа, по центру сверху. */
+function placeDrawing(d: VectorDrawing) {
+  const p = app.paper.peek();
+  const maxW = p.width - p.marginLeft - p.marginRight, maxH = p.height - p.marginTop - p.marginBottom;
+  const k = Math.min(maxW, maxH / Math.max(0.01, d.aspect));
+  const left = p.marginLeft + (maxW - k) / 2;
+  return d.paths.map((pts) => ({ pts: pts.map((v, i) => (i % 2 === 0 ? left + v * k : p.marginTop + v * k)), line: 0 }));
+}
+
+function showPicture() {
+  if (!lastPic) return;
+  const d = vectorize(lastPic.g, { mode: picMode.peek(), size: 1000 });
+  if (!d.paths.length) return toast('На картинке не нашлось линий: попробуйте картинку контрастнее (тёмный рисунок на светлом фоне).', 'warn', 8000);
+  app.source.value = { kind: 'drawing', name: lastPic.name, strokes: placeDrawing(d) };
+  app.currentPage.value = 0;
+  return d.paths.length;
+}
+
+/** Обычная картинка (PNG, JPG, SVG…) → линии для ручки на весь лист. */
+export async function importPicture() {
+  const f = await pickFile('image/*,.svg');
+  if (!f) return;
+  try {
+    lastPic = { name: f.name, g: await imageFileToGray(f, 2000) };
+    const n = showPicture();
+    if (n) toast(`Картинка «${f.name}»: ${n} линий, вписана в поля. Если вышло не так — смените «Как рисовать» под кнопкой.`, 'ok', 8000);
   } catch (e: any) {
     toast('Не удалось открыть картинку: ' + (e?.message ?? e), 'err');
   }
@@ -190,10 +227,25 @@ export function TextTab() {
       </Section>
       <Section title="Другое на лист">
         <div class="row wrap">
-          <Btn small onClick={() => importSvg()}><Icon name="upload" size={14} /> Рисунок SVG</Btn>
+          <Btn small kind="primary" onClick={() => importPicture()}><Icon name="upload" size={14} /> Картинка (PNG, JPG, SVG)</Btn>
+          <Btn small onClick={() => importSvg()} title="Для чертежей, где SVG уже нарисован линиями: линии берутся как есть"><Icon name="upload" size={14} /> SVG-чертёж как есть</Btn>
           <Btn small onClick={() => importGcode()}><Icon name="upload" size={14} /> Готовый G-код</Btn>
           <Btn small kind="ghost" onClick={() => { if (confirm('Вернуть пример текста?')) app.text.value = SAMPLE_TEXT; }}>Пример текста</Btn>
         </div>
+        <div class="row wrap" style="margin-top:6px">
+          <span class="small muted">Как рисовать картинку:</span>
+          <Segmented
+            small
+            value={() => picMode.value}
+            onChange={(v) => { picMode.value = v; if (lastPic && app.source.peek().kind === 'drawing') showPicture(); }}
+            options={[
+              { value: 'auto', label: 'Авто' },
+              { value: 'lines', label: 'Линиями' },
+              { value: 'outline', label: 'Контуром' },
+            ]}
+          />
+        </div>
+        <div class="muted small">«Линиями» — для схем и рисунков линией, «Контуром» — для залитых силуэтов и жирных букв, «Авто» решает для каждого пятна. Конвертировать в SVG заранее не нужно.</div>
       </Section>
     </div>
   );

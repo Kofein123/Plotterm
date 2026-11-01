@@ -33,6 +33,8 @@ export interface PlanInput {
   title: string;
   /** коэффициент уточнения оценки времени по прошлым печатям */
   timeFactor?: number;
+  /** штрихи за краем листа не печатать (вместо запрета печати) */
+  skipOutside?: boolean;
 }
 
 export interface Plan {
@@ -45,6 +47,8 @@ export interface Plan {
   /** строка G-кода → штрих (-1 для служебных строк) */
   lineStroke: Int32Array;
   outOfBounds: number[];
+  /** сколько штрихов за краем выброшено (skipOutside) */
+  skipped?: number;
   drawLength: number;
   travelLength: number;
   penLifts: number;
@@ -126,7 +130,7 @@ export function buildPlan(inp: PlanInput): Plan {
 
   // 2. порядок и склейка
   const ordered = orderStrokes(prepared, inp.reorder);
-  const joined: { pts: number[]; line: number }[] = [];
+  let joined: { pts: number[]; line: number }[] = [];
   for (const s of ordered) {
     const last = joined[joined.length - 1];
     if (last && speed.joinTolerance > 0) {
@@ -140,7 +144,7 @@ export function buildPlan(inp: PlanInput): Plan {
   }
 
   // 3. проверка границ листа
-  const outOfBounds: number[] = [];
+  let outOfBounds: number[] = [];
   const tol = 0.3;
   joined.forEach((s, i) => {
     for (let j = 0; j < s.pts.length; j += 2) {
@@ -151,6 +155,14 @@ export function buildPlan(inp: PlanInput): Plan {
       }
     }
   });
+
+  let skipped = 0;
+  if (inp.skipOutside && outOfBounds.length) {
+    const out = new Set(outOfBounds);
+    joined = joined.filter((_, i) => !out.has(i));
+    skipped = out.size;
+    outOfBounds = [];
+  }
 
   // 4. G-код
   const z = penZ(inp.calib, pen.pressure);
@@ -300,6 +312,7 @@ export function buildPlan(inp: PlanInput): Plan {
     strokeStart,
     lineStroke: Int32Array.from(lineStrokeArr),
     outOfBounds,
+    skipped,
     drawLength,
     travelLength,
     penLifts: joined.length,

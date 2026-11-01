@@ -104,6 +104,36 @@ test('картинка → линии: квадрат превращается �
   assert.ok(Math.min(...xs) < 0.13 && Math.max(...xs) > 0.87);
 });
 
+test('разметка: заголовки ### и **жирный** из ChatGPT', () => {
+  const p = parseMarkup('### **Краткий конспект**\nТекст **важный**');
+  assert.equal(p[0].kind, 'text');
+  if (p[0].kind !== 'text' || p[1].kind !== 'text') return;
+  assert.equal(p[0].heading, true);
+  assert.equal(p[0].chars.map((c) => c.ch).join(''), 'Краткий конспект');
+  assert.equal(p[1].chars.map((c) => c.ch).join(''), 'Текст важный');
+});
+
+test('картинка с компьютера: залитый круг рисуется контуром, тонкая линия — одной линией', () => {
+  const W = 300, H = 200;
+  const data = new Uint8Array(W * H).fill(255);
+  // залитый круг r=50 в (90, 100) и тонкая линия толщиной 3 справа
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if ((x - 90) ** 2 + (y - 100) ** 2 <= 50 * 50) data[y * W + x] = 0;
+  for (let y = 40; y < 160; y++) for (let x = 229; x < 232; x++) data[y * W + x] = 0;
+  const auto = vectorize({ w: W, h: H, data }, { mode: 'auto' });
+  // у круга должна быть окружность радиуса ~50 px (в долях ширины ~0.167), а не точка/крестик в центре
+  const pts = auto.paths.flatMap((p) => { const o: [number, number][] = []; for (let i = 0; i < p.length; i += 2) o.push([p[i] * W, p[i + 1] * W]); return o; });
+  const ring = pts.filter(([x, y]) => x < 160);
+  assert.ok(ring.length > 20);
+  for (const [x, y] of ring) assert.ok(Math.abs(Math.hypot(x - 90, y - 100) - 50) < 4, `${x},${y}`);
+  const line = pts.filter(([x]) => x > 200);
+  assert.ok(line.length >= 2);
+  for (const [x] of line) assert.ok(Math.abs(x - 230) < 2.5, `${x}`);
+  // по средней линии круг сжимается к центру — так было раньше
+  const lines = vectorize({ w: W, h: H, data }, { mode: 'lines' });
+  const lp = lines.paths.flatMap((p) => p.filter((_, i) => i % 2 === 0).map((v) => v * W)).filter((x) => x < 160);
+  assert.ok(Math.max(...lp) - Math.min(...lp) < 60);
+});
+
 test('склейка штрихов: два отрезка, сходящихся концами, становятся одним', () => {
   const m = mergeTouching([[0, 0, 50, 0], [50, 0, 100, 0], [0, 50, 0, 90]], 10);
   assert.equal(m.length, 2);
