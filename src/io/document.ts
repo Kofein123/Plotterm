@@ -442,7 +442,14 @@ export async function docxToDocument(buf: ArrayBuffer): Promise<ImportedDocument
     if (g) images.push({ id, name: `Рисунок ${images.length + 1}`, ...vectorize(g) });
   }
   // подписи «Рисунок 1 — …» сразу под картинкой переносим в подпись
-  const text = out.join('\n').replace(/!\[\]\(img:(\w+)\)\n(?:\n)?(\d+(?:[.,]\d+)*\s*[-‐–]?\s*(?:сурет|рис\.?|рисунок|figure)[^\n]*)/giu, (_m, id, cap) => `![${cap.replace(/[\[\]]/g, '')}](img:${id})`);
+  let text = out.join('\n').replace(/!\[\]\(img:(\w+)\)\n(?:\n)?(\d+(?:[.,]\d+)*\s*[-‐–]?\s*(?:сурет|рис\.?|рисунок|figure)[^\n]*)/giu, (_m, id, cap) => `![${cap.replace(/[\[\]]/g, '')}](img:${id})`);
+  // пометка под рисунком «[ қолмен ]» / «[ басып шығару ]» — как в PDF: карандашом или оставить место
+  text = text.replace(/(!\[[^\]\n]*\]\(img:\w+)\)\n(?:\n)?([^\n]*)/gu, (m, head, next) => {
+    const t = next.trim();
+    if (HAND_MARK.test(t)) return `${head} карандаш)`;
+    if (PRINT_MARK.test(t)) return `${head} место)`;
+    return m;
+  });
   return { text: text.replace(/\n{3,}/g, '\n\n').trim() + '\n', images };
 }
 
