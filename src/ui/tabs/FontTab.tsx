@@ -40,6 +40,7 @@ export function FontTab() {
           <NumInput value={bind(t, 'indent').get} onChange={bind(t, 'indent').set} min={0} max={40} step={1} unit="мм" />
         </Field>
         <Toggle value={bind(t, 'hyphenate').get} onChange={bind(t, 'hyphenate').set} label="Переносить слова по слогам" />
+        <Toggle value={() => t.value.cursive !== false} onChange={(v: boolean) => t.patch({ cursive: v })} label="Связное письмо" hint="Соединять буквы в слове одной линией. Выключите, если пишете буквы раздельно или соединения выходят кривыми" />
       </Section>
       <Section title="Живость почерка">
         <Field label="Живость" hint="0 — ровно как по линейке, 10 — заметно «от руки»">
