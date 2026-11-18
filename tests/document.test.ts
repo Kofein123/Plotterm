@@ -7,6 +7,8 @@ import { layoutText } from '../src/core/layout.ts';
 import { parseMarkup } from '../src/core/markup.ts';
 import { structure, imageBoxes, type TextItem } from '../src/io/document.ts';
 import { vectorize } from '../src/io/vectorize.ts';
+import { findImageLine, moveImage, removeImage, setImage } from '../src/core/editmarkup.ts';
+import { tidyOcr } from '../src/io/ocr.ts';
 import type { PaperSettings, TypographySettings } from '../src/core/types.ts';
 
 const paper: PaperSettings = { template: 'a4', width: 210, height: 297, marginTop: 15, marginBottom: 15, marginLeft: 20, marginRight: 15, blankLineStep: 9, cell: 5, gridLineCells: 2, rulePitch: 8, side: 'right', rotate180: false, startLine: 1 };
@@ -202,4 +204,37 @@ test('испорченный вариант буквы (чужой кусок, �
   const out = dropOutliers([ok(0), ok(3), ok(-2), shifted]);
   assert.equal(out.length, 3);
   assert.ok(!out.includes(shifted));
+});
+
+test('правка из предпросмотра: ширина, инструмент, перенос и удаление рисунка', () => {
+  const t = 'До рисунка\n\n![Рис. 1](img:a1)\n\nПосле рисунка\n';
+  const narrow = setImage(t, 'a1', { width: 0.5, tool: 'pencil' });
+  assert.ok(narrow.includes('![Рис. 1](img:a1 50% карандаш)'));
+  // ширина во всю строку снова пишется без процента
+  assert.ok(setImage(narrow, 'a1', { width: 1, tool: 'pen' }).includes('![Рис. 1](img:a1)'));
+  const info = findImageLine(narrow, 'a1')!;
+  assert.equal(info.width, 0.5);
+  assert.equal(info.tool, 'pencil');
+  // вниз — за следующий непустой абзац, пустые строки пропускаются
+  const down = moveImage(t, 'a1', 1);
+  assert.deepEqual(down.split('\n').filter(Boolean), ['До рисунка', 'После рисунка', '![Рис. 1](img:a1)']);
+  assert.deepEqual(moveImage(t, 'a1', -1).split('\n').filter(Boolean), ['![Рис. 1](img:a1)', 'До рисунка', 'После рисунка']);
+  // у края текста рисунок остаётся на месте
+  assert.equal(moveImage(moveImage(t, 'a1', -1), 'a1', -1), moveImage(t, 'a1', -1));
+  assert.ok(!removeImage(t, 'a1').includes('img:a1'));
+  assert.equal(removeImage(t, 'zz'), t);
+});
+
+test('распознанный текст: строки абзаца склеиваются, перенос сшивается, отступ начинает абзац', () => {
+  const L = (text: string, top: number, left = 10) => ({ text, top, height: 10, left });
+  const out = tidyOcr([
+    L('Классификация электри-', 0),
+    L('ческих станций.', 12),
+    L('Цель: познакомиться с ти-', 40),
+    L('пами станций', 52),
+  ]);
+  assert.equal(out, 'Классификация электрических станций.\n\nЦель: познакомиться с типами станций\n');
+  // красная строка начинает новый абзац, даже если предыдущая строка не кончилась точкой
+  const ind = tidyOcr([L('первый абзац без точки', 0), L('второй абзац', 12, 30)]);
+  assert.equal(ind, 'первый абзац без точки\n\nвторой абзац\n');
 });

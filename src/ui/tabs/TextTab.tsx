@@ -7,6 +7,7 @@ import { signal } from '../reactive.ts';
 import { imageFileToGray } from '../../io/image.ts';
 import { Btn, Icon, Note, Section, Segmented } from '../components.tsx';
 import { readTextFile, svgToStrokes } from '../../io/importers.ts';
+import { recognizeImage } from '../../io/ocr.ts';
 import { pickFile, toast, fmtTime } from '../../app/notify.ts';
 
 async function importText() {
@@ -59,6 +60,26 @@ async function insertPicture(insert: (s: string) => void) {
     toast(`Рисунок «${f.name}»: ${d.paths.length} линий, во всю ширину строки. В строке можно дописать «70%», «карандаш» или «место».`, 'ok', 8000);
   } catch (e: any) {
     toast('Не удалось открыть картинку: ' + (e?.message ?? e), 'err');
+  }
+}
+
+/** Распознавание текста на картинке идёт долго — показываем это на самой кнопке. */
+const ocrBusy = signal<string | null>(null);
+
+/** Скриншот или фото страницы → текст: плоттер напишет его почерком, а не обведёт как рисунок. */
+async function insertRecognized(insert: (s: string) => void) {
+  const f = await pickFile('image/*');
+  if (!f) return;
+  ocrBusy.value = 'Готовлю распознаватель…';
+  try {
+    const text = await recognizeImage(f, { onProgress: (m) => (ocrBusy.value = m) });
+    if (!text.trim()) return toast('На картинке не нашлось текста. Если это схема, вставьте её кнопкой «+ рисунок».', 'warn', 8000);
+    insert('\n' + text.trim() + '\n');
+    toast(`Текст с «${f.name}» распознан: ${text.trim().length} знаков. Проверьте его глазами — распознавание ошибается в цифрах и формулах.`, 'ok', 9000);
+  } catch (e: any) {
+    toast('Не удалось распознать: ' + (e?.message ?? e) + '. Нужен интернет: распознаватель загружается при первом запуске.', 'err', 9000);
+  } finally {
+    ocrBusy.value = null;
   }
 }
 
@@ -189,6 +210,14 @@ export function TextTab() {
           <button class="chip" title="Подчеркнуть" onClick={() => insert('____')}>подчеркнуть</button>
           <button class="chip" title="Новая страница" onClick={() => insert('\n===\n')}>новая стр.</button>
           <button class="chip" title="Рисунок из фото или картинки: плоттер нарисует его линиями" onClick={() => insertPicture(insert)}>+ рисунок</button>
+          <button
+            class="chip"
+            title="Текст со скриншота или фото страницы: распознать и написать почерком, а не обводить"
+            disabled={() => !!ocrBusy.value}
+            onClick={() => insertRecognized(insert)}
+          >
+            {() => ocrBusy.value ?? '+ текст с картинки'}
+          </button>
         </div>
         <div class="text-stats muted">
           {() => {
@@ -202,6 +231,7 @@ export function TextTab() {
           return miss.length ? <Note kind="warn">Нет рисунков: {miss.join(', ')} — на их месте останется пустое место. Загрузите файл лекции заново на этом устройстве.</Note> : null;
         }}
         <div class="muted small">
+          «+ текст с картинки» распознаёт печатный текст (русский и казахский) и вставляет его как текст — почерком. Рукописный текст так не читается.
           Рисунок — строка <code>![подпись](img:…)</code>: по умолчанию во всю ширину, добавьте «50%», чтобы сделать уже, «карандаш» — нарисовать карандашом после текста
           страницы (плоттер попросит сменить ручку), «место» — оставить место под распечатку.
         </div>
