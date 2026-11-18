@@ -59,6 +59,8 @@ export const app = createRoot(() => {
             layout.value = layoutText(inp);
         }, 120);
     });
+    /** Вёрстка прямо сейчас, без задержки: нужна, чтобы понять, на какой странице окажется рисунок. */
+    const layoutNow = (t) => layoutText({ text: t, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin, images: images.value });
     const machine = new Machine();
     const limits = computed(() => {
         const s = machine.settings.value;
@@ -197,7 +199,7 @@ export const app = createRoot(() => {
     return {
         text, typo, paper, pen, speed, calib, prefs, stats, profiles, source,
         customFonts, fonts, font, frame, images, layout, machine, limits, currentPage, dryRun,
-        pageStrokes, pageCount, planFor, previewPlan, printLines, zoneMode, printZone, totalEstimate, job, isPenDown,
+        layoutNow, pageStrokes, pageCount, planFor, previewPlan, printLines, zoneMode, printZone, totalEstimate, job, isPenDown,
     };
 });
 /** Центр рамки штриха — по нему решается, попал ли штрих в зону (буква не режется пополам). */

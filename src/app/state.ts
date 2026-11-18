@@ -109,6 +109,10 @@ export const app = createRoot(() => {
     }, 120);
   });
 
+  /** Вёрстка прямо сейчас, без задержки: нужна, чтобы понять, на какой странице окажется рисунок. */
+  const layoutNow = (t: string) =>
+    layoutText({ text: t, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin, images: images.value });
+
   const machine = new Machine();
   const limits = computed<MachineLimits>(() => {
     const s = machine.settings.value;
@@ -232,7 +236,7 @@ export const app = createRoot(() => {
   return {
     text, typo, paper, pen, speed, calib, prefs, stats, profiles, source,
     customFonts, fonts, font, frame, images, layout, machine, limits, currentPage, dryRun,
-    pageStrokes, pageCount, planFor, previewPlan, printLines, zoneMode, printZone, totalEstimate, job, isPenDown,
+    layoutNow, pageStrokes, pageCount, planFor, previewPlan, printLines, zoneMode, printZone, totalEstimate, job, isPenDown,
   };
 });
 

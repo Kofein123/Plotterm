@@ -8,9 +8,10 @@ import { polyDist2 } from '../core/geometry.ts';
 import type { Plan } from '../core/plan.ts';
 import { Btn, Icon } from './components.tsx';
 import { findImageLine, moveImage, removeImage, setImage } from '../core/editmarkup.ts';
+import { canRedo, canUndo, mark, redo, undo } from '../app/history.ts';
 import type { ImageBox } from '../core/types.ts';
 import type { ImageTool } from '../core/markup.ts';
-import { fmtTime } from '../app/notify.ts';
+import { fmtTime, toast } from '../app/notify.ts';
 
 const view = signal({ scale: 3, ox: 40, oy: 40 });
 let fitted = false;
@@ -33,7 +34,45 @@ function lineStep(): number {
 }
 
 function patchImage(id: string, patch: { width?: number; tool?: ImageTool }) {
+  mark();
   app.text.value = setImage(app.text.peek(), id, patch);
+}
+
+/** Номер страницы, на которую попал рисунок при данной вёрстке. */
+function pageOfImage(text: string, id: string): number {
+  const pages = app.layoutNow(text).pages;
+  for (let i = 0; i < pages.length; i++) if (pages[i].images.some((im) => im.id === id)) return i;
+  return -1;
+}
+
+/**
+ * Перенести рисунок на соседнюю страницу: двигаем его по тексту абзац за абзацем,
+ * пока вёрстка не положит его на другую страницу.
+ */
+function moveImageToPage(id: string, dir: -1 | 1) {
+  const start = app.text.peek();
+  const from = pageOfImage(start, id);
+  let cur = start;
+  for (let n = 0; n < 60; n++) {
+    const next = moveImage(cur, id, dir);
+    if (next === cur) break;
+    cur = next;
+    const page = pageOfImage(cur, id);
+    if (page >= 0 && page !== from) {
+      mark();
+      app.text.value = cur;
+      app.currentPage.value = Math.max(0, page);
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Высота строчной буквы: быстрый способ сделать текст мельче или крупнее прямо у листа. */
+function stepTextSize(d: number) {
+  mark();
+  const x = Math.round((app.typo.peek().xHeight + d) * 10) / 10;
+  app.typo.patch({ xHeight: Math.max(1.5, Math.min(7, x)) });
 }
 
 /** План, который сейчас показываем: задание (если идёт) или предпросмотр текущей страницы. */
@@ -425,7 +464,10 @@ export function Preview() {
       imgDrag = null;
       const [, vv] = toPaper(e);
       const steps = Math.round((vv - d.v) / lineStep());
-      if (steps) app.text.value = moveImage(app.text.peek(), d.id, steps > 0 ? 1 : -1, Math.abs(steps));
+      if (steps) {
+        mark();
+        app.text.value = moveImage(app.text.peek(), d.id, steps > 0 ? 1 : -1, Math.abs(steps));
+      }
       return;
     }
     if (zoneStart) {
@@ -498,6 +540,12 @@ export function Preview() {
           </button>
         </div>
         <div class="preview-tools">
+          <button class="icon-btn" title="Отменить (Ctrl+Z)" disabled={() => !canUndo.value} onClick={() => undo()}>
+            <Icon name="undo" size={16} />
+          </button>
+          <button class="icon-btn" title="Вернуть (Ctrl+Y)" disabled={() => !canRedo.value} onClick={() => redo()}>
+            <Icon name="redo" size={16} />
+          </button>
           <button class={() => 'chip' + (app.prefs.value.showTravel ? ' on' : '')} title="Показать холостые ходы (ручка поднята)" onClick={() => app.prefs.patch({ showTravel: !app.prefs.peek().showTravel })}>
             Холостой ход
           </button>
@@ -544,15 +592,26 @@ export function Preview() {
             {() => {
               const id = selImage.value;
               const info = id ? findImageLine(app.text.value, id) : null;
-              if (!id || !info) return <span>Щёлкните по рисунку на листе: его можно передвинуть мышью, сузить, нарисовать карандашом или убрать.</span>;
+              if (!id || !info)
+                return (
+                  <span class="row wrap">
+                    <span>Щёлкните по рисунку: его можно тянуть мышью, сузить, перенести на другую страницу или убрать.</span>
+                    <span title="Размер листа меняется на вкладке «Бумага»">Лист {Math.round(app.paper.value.width)}×{Math.round(app.paper.value.height)} мм</span>
+                    <span>Текст {app.typo.value.xHeight.toFixed(1)} мм</span>
+                    <Btn small onClick={() => stepTextSize(-0.2)}>мельче</Btn>
+                    <Btn small onClick={() => stepTextSize(0.2)}>крупнее</Btn>
+                  </span>
+                );
               const w = info.width;
               return (
                 <span class="row wrap">
                   <span>Рисунок {Math.round(w * 100)} %</span>
                   <Btn small onClick={() => patchImage(id, { width: Math.max(0.1, Math.round((w - 0.1) * 10) / 10) })} disabled={() => w <= 0.1}>уже</Btn>
                   <Btn small onClick={() => patchImage(id, { width: Math.min(1, Math.round((w + 0.1) * 10) / 10) })} disabled={() => w >= 1}>шире</Btn>
-                  <Btn small onClick={() => (app.text.value = moveImage(app.text.peek(), id, -1))}>выше</Btn>
-                  <Btn small onClick={() => (app.text.value = moveImage(app.text.peek(), id, 1))}>ниже</Btn>
+                  <Btn small onClick={() => { mark(); app.text.value = moveImage(app.text.peek(), id, -1); }}>выше</Btn>
+                  <Btn small onClick={() => { mark(); app.text.value = moveImage(app.text.peek(), id, 1); }}>ниже</Btn>
+                  <Btn small title="Перенести на предыдущую страницу" onClick={() => moveImageToPage(id, -1) || toast('Рисунок уже на первой странице.', 'info')}>← стр.</Btn>
+                  <Btn small title="Перенести на следующую страницу" onClick={() => moveImageToPage(id, 1) || toast('Дальше текста нет — рисунок остался на месте.', 'info')}>стр. →</Btn>
                   <Btn small kind={info.tool === 'pen' ? 'primary' : 'ghost'} onClick={() => patchImage(id, { tool: 'pen' })}>ручкой</Btn>
                   <Btn small kind={info.tool === 'pencil' ? 'primary' : 'ghost'} onClick={() => patchImage(id, { tool: 'pencil' })}>карандашом</Btn>
                   <Btn small kind={info.tool === 'space' ? 'primary' : 'ghost'} onClick={() => patchImage(id, { tool: 'space' })}>место</Btn>
