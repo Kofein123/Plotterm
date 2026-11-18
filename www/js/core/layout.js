@@ -403,8 +403,8 @@ export function layoutText(inp) {
         let w = full * frac;
         let h = w * aspect;
         const pageH = step * baselines.length;
-        if (h > pageH * 0.85) {
-            h = pageH * 0.85;
+        if (h > pageH * 0.92) {
+            h = pageH * 0.92;
             w = h / aspect;
         }
         const lines = Math.max(1, Math.ceil(h / step + 0.4));
