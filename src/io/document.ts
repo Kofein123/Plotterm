@@ -1,7 +1,7 @@
-// Документ лекции (PDF, Word) → наша разметка + рисунки.
+// Документ лекции (PDF, Word, PowerPoint) → наша разметка + рисунки.
 // Из PDF берём текст с координатами и размером шрифта, собираем строки и абзацы, находим заголовки,
 // списки и таблицы; картинки вырезаем со страницы и переводим в линии для ручки.
-import { readZipEntry } from './zip.ts';
+import { listZipEntries, readZipEntry } from './zip.ts';
 import { vectorize, type VectorDrawing } from './vectorize.ts';
 import type { Gray } from './templateImport.ts';
 
@@ -369,7 +369,7 @@ async function blobGray(bytes: Uint8Array, mime: string): Promise<Gray | null> {
 
 const MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp', webp: 'image/webp' };
 
-export async function docxToDocument(buf: ArrayBuffer): Promise<ImportedDocument> {
+export async function docxToDocument(buf: ArrayBuffer, onProgress?: (msg: string) => void): Promise<ImportedDocument> {
   const xmlBytes = await readZipEntry(buf, 'word/document.xml');
   if (!xmlBytes) throw new Error('в файле нет word/document.xml');
   const doc = new DOMParser().parseFromString(new TextDecoder().decode(xmlBytes), 'application/xml');
@@ -435,11 +435,12 @@ export async function docxToDocument(buf: ArrayBuffer): Promise<ImportedDocument
     }
   }
   for (const { id, target } of pending) {
+    onProgress?.(`Перевожу рисунки в линии: ${images.length + 1} из ${pending.length}`);
     const path = target.startsWith('/') ? target.slice(1) : 'word/' + target.replace(/^\.\//, '');
     const bytes = await readZipEntry(buf, path);
     const ext = path.split('.').pop()?.toLowerCase() ?? '';
     const g = bytes && MIME[ext] ? await blobGray(bytes, MIME[ext]) : null;
-    if (g) images.push({ id, name: `Рисунок ${images.length + 1}`, ...vectorize(g) });
+    if (g) images.push({ id, name: `Рисунок ${images.length + 1}`, ...vectorize(g, { mode: 'auto' }) });
   }
   // подписи «Рисунок 1 — …» сразу под картинкой переносим в подпись
   let text = out.join('\n').replace(/!\[\]\(img:(\w+)\)\n(?:\n)?(\d+(?:[.,]\d+)*\s*[-‐–]?\s*(?:сурет|рис\.?|рисунок|figure)[^\n]*)/giu, (_m, id, cap) => `![${cap.replace(/[\[\]]/g, '')}](img:${id})`);
@@ -450,6 +451,109 @@ export async function docxToDocument(buf: ArrayBuffer): Promise<ImportedDocument
     if (PRINT_MARK.test(t)) return `${head} место)`;
     return m;
   });
+  return { text: text.replace(/\n{3,}/g, '\n\n').trim() + '\n', images };
+}
+
+/**
+ * Презентация (.pptx) → конспект. Берём с каждого слайда заголовок, текст и картинки;
+ * номера слайдов, колонтитулы и повторяющийся текст шаблона пропускаем — в конспекте они не нужны.
+ */
+export async function pptxToDocument(buf: ArrayBuffer, onProgress?: (msg: string) => void): Promise<ImportedDocument> {
+  const A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+  const P = 'http://schemas.openxmlformats.org/presentationml/2006/main';
+  const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  const slides = listZipEntries(buf)
+    .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .sort((a, b) => Number(a.match(/(\d+)/)![1]) - Number(b.match(/(\d+)/)![1]));
+  if (!slides.length) throw new Error('в файле нет слайдов (ppt/slides)');
+  const dec = new TextDecoder();
+  const out: string[] = [];
+  const images: DocDrawing[] = [];
+  const pending: { id: string; target: string }[] = [];
+
+  for (let si = 0; si < slides.length; si++) {
+    const xml = await readZipEntry(buf, slides[si]);
+    if (!xml) continue;
+    const doc = new DOMParser().parseFromString(dec.decode(xml), 'application/xml');
+    const relBytes = await readZipEntry(buf, slides[si].replace('ppt/slides/', 'ppt/slides/_rels/') + '.rels');
+    const rels: Record<string, string> = {};
+    if (relBytes) {
+      const rd = new DOMParser().parseFromString(dec.decode(relBytes), 'application/xml');
+      for (const r of Array.from(rd.getElementsByTagName('Relationship'))) rels[r.getAttribute('Id') ?? ''] = r.getAttribute('Target') ?? '';
+    }
+    const tree = doc.getElementsByTagNameNS(P, 'spTree')[0];
+    if (!tree) continue;
+    // порядок чтения — сверху вниз: в файле фигуры лежат в порядке рисования, а не чтения
+    const top = (el: Element) => Number(el.getElementsByTagNameNS(A, 'off')[0]?.getAttribute('y') ?? Number.MAX_SAFE_INTEGER);
+    const shapes = Array.from(tree.children)
+      .filter((el) => el.namespaceURI === P && (el.localName === 'sp' || el.localName === 'pic' || el.localName === 'graphicFrame'))
+      .map((el, i) => ({ el, i, y: top(el) }))
+      .sort((a, b) => a.y - b.y || a.i - b.i);
+    const lines: string[] = [];
+    let title = '';
+    for (const { el } of shapes) {
+      const ph = el.getElementsByTagNameNS(P, 'ph')[0];
+      const phType = ph?.getAttribute('type') ?? '';
+      // номер слайда, дата, колонтитул
+      if (phType === 'sldNum' || phType === 'dt' || phType === 'ftr') continue;
+      if (el.localName === 'pic') {
+        const target = rels[el.getElementsByTagNameNS(A, 'blip')[0]?.getAttributeNS(R, 'embed') ?? ''];
+        if (target) {
+          const id = `p${pending.length + 1}`;
+          pending.push({ id, target });
+          lines.push(`![](img:${id})`);
+        }
+        continue;
+      }
+      const paraText = (para: Element) =>
+        Array.from(para.getElementsByTagNameNS(A, 't')).map((n) => n.textContent ?? '').join('').replace(/\s+/g, ' ').trim();
+      // таблица на слайде — строками «| а | б |», как в Word
+      if (el.localName === 'graphicFrame') {
+        for (const tr of Array.from(el.getElementsByTagNameNS(A, 'tr'))) {
+          const cells = Array.from(tr.getElementsByTagNameNS(A, 'tc')).map((tc) =>
+            Array.from(tc.getElementsByTagNameNS(A, 'p')).map(paraText).filter(Boolean).join(' '),
+          );
+          if (cells.some(Boolean)) lines.push('| ' + cells.map((c) => c.replace(/\|/g, '\\|')).join(' | ') + ' |');
+        }
+        continue;
+      }
+      for (const para of Array.from(el.getElementsByTagNameNS(A, 'p'))) {
+        const t = paraText(para);
+        if (!t) continue;
+        // одинокий номер слайда в текстовом поле
+        if (/^\d{1,3}$/.test(t) && !/title|ctrTitle/.test(phType)) continue;
+        if (!title && /title/.test(phType)) { title = t; continue; }
+        const lvl = Number(para.getElementsByTagNameNS(A, 'pPr')[0]?.getAttribute('lvl') ?? 0);
+        // список — только там, где он на слайде и есть: в рамке с текстом слайда или с готовым маркером.
+        // Подпись под рисунком и обычная надпись остаются обычной строкой.
+        const bullet = BULLET.test(t) || (!!ph && !CAPTION.test(t));
+        lines.push((lvl > 0 ? '  '.repeat(lvl - 1) : '') + (BULLET.test(t) ? t.replace(BULLET, '— ') : bullet ? '— ' + t : t));
+      }
+    }
+    if (!title && !lines.length) continue;
+    if (out.length) out.push('');
+    out.push('# ' + (title || `Слайд ${si + 1}`));
+    out.push('');
+    out.push(...lines);
+  }
+
+  for (const { id, target } of pending) {
+    onProgress?.(`Перевожу рисунки в линии: ${images.length + 1} из ${pending.length}`);
+    const path = target.startsWith('/') ? target.slice(1) : 'ppt/slides/' + target;
+    // «ppt/slides/../media/image1.jpg» → «ppt/media/image1.jpg»
+    const norm = path.replace(/[^/]+\/\.\.\//g, '').replace(/\/\.\//g, '/');
+    const bytes = await readZipEntry(buf, norm);
+    const ext = norm.split('.').pop()?.toLowerCase() ?? '';
+    const g = bytes && MIME[ext] ? await blobGray(bytes, MIME[ext]) : null;
+    if (g) images.push({ id, name: `Рисунок ${images.length + 1}`, ...vectorize(g, { mode: 'auto' }) });
+  }
+  // картинка, которой не удалось прочитать файл, не должна остаться висячей разметкой
+  let text = out.join('\n');
+  // подпись «4.10-сурет …» сразу под рисунком переносим в подпись самого рисунка
+  text = text.replace(/!\[\]\(img:(\w+)\)\n(?:\n)?([^\n]+)/gu, (m, id, next) =>
+    CAPTION.test(next.trim()) ? `![${next.trim().replace(/[\[\]]/g, '')}](img:${id})` : m,
+  );
+  for (const { id } of pending) if (!images.some((im) => im.id === id)) text = text.replace(new RegExp(`!\\[\\]\\(img:${id}\\)\\n?`, 'g'), '');
   return { text: text.replace(/\n{3,}/g, '\n\n').trim() + '\n', images };
 }
 

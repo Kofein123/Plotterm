@@ -1,6 +1,6 @@
 import { h } from "../dom.js";
 import { app, SAMPLE_TEXT, saveImages } from "../../app/state.js";
-import { docxToDocument, missingImages, pdfToDocument } from "../../io/document.js";
+import { docxToDocument, missingImages, pdfToDocument, pptxToDocument } from "../../io/document.js";
 import { vectorize } from "../../io/vectorize.js";
 import { signal } from "../reactive.js";
 import { imageFileToGray } from "../../io/image.js";
@@ -8,15 +8,19 @@ import { Btn, Icon, Note, Section, Segmented } from "../components.js";
 import { readTextFile, svgToStrokes } from "../../io/importers.js";
 import { pickFile, toast, fmtTime } from "../../app/notify.js";
 async function importText() {
-    const f = await pickFile('.pdf,.docx,.txt,.md,.markdown,text/plain,application/pdf');
+    const f = await pickFile('.pdf,.docx,.pptx,.txt,.md,.markdown,text/plain,application/pdf');
     if (!f)
         return;
     const name = f.name.toLowerCase();
     try {
-        if (name.endsWith('.pdf') || name.endsWith('.docx')) {
+        if (name.endsWith('.pdf') || name.endsWith('.docx') || name.endsWith('.pptx')) {
             toast(`Читаю «${f.name}»: текст и рисунки…`, 'info', 4000);
             const buf = await f.arrayBuffer();
-            const d = name.endsWith('.pdf') ? await pdfToDocument(buf, (m) => toast(m, 'info', 1500)) : await docxToDocument(buf);
+            const d = name.endsWith('.pdf')
+                ? await pdfToDocument(buf, (m) => toast(m, 'info', 1500))
+                : name.endsWith('.pptx')
+                    ? await pptxToDocument(buf, (m) => toast(m, 'info', 1500))
+                    : await docxToDocument(buf, (m) => toast(m, 'info', 1500));
             await saveImages(d.images.map((im) => ({ ...im, id: im.id })));
             app.text.value = d.text;
             app.source.value = { kind: 'text' };
@@ -42,7 +46,7 @@ async function insertPicture(insert) {
     if (!f)
         return;
     try {
-        const g = await imageFileToGray(f, 1800);
+        const g = await imageFileToGray(f, 2400);
         const d = vectorize(g, { mode: 'auto' });
         if (!d.paths.length)
             return toast('На картинке не нашлось линий.', 'warn');
@@ -69,7 +73,7 @@ function placeDrawing(d) {
 function showPicture() {
     if (!lastPic)
         return;
-    const d = vectorize(lastPic.g, { mode: picMode.peek(), size: 1000 });
+    const d = vectorize(lastPic.g, { mode: picMode.peek() });
     if (!d.paths.length)
         return toast('На картинке не нашлось линий: попробуйте картинку контрастнее (тёмный рисунок на светлом фоне).', 'warn', 8000);
     app.source.value = { kind: 'drawing', name: lastPic.name, strokes: placeDrawing(d) };
@@ -155,7 +159,7 @@ export function TextTab() {
             ' ',
             h("a", { href: "#", onClick: (e) => { e.preventDefault(); app.source.value = { kind: 'text' }; } }, "\u0412\u0435\u0440\u043D\u0443\u0442\u044C\u0441\u044F \u043A \u0442\u0435\u043A\u0441\u0442\u0443"))) : null,
         h(Section, { title: "\u0422\u0435\u043A\u0441\u0442 \u043A\u043E\u043D\u0441\u043F\u0435\u043A\u0442\u0430", aside: h("span", { class: "row" },
-                h(Btn, { small: true, kind: "ghost", onClick: () => importText(), title: "PDF, Word (.docx), .txt, .md \u2014 \u0432\u043C\u0435\u0441\u0442\u0435 \u0441 \u0440\u0438\u0441\u0443\u043D\u043A\u0430\u043C\u0438" },
+                h(Btn, { small: true, kind: "ghost", onClick: () => importText(), title: "PDF, Word (.docx), \u043F\u0440\u0435\u0437\u0435\u043D\u0442\u0430\u0446\u0438\u044F (.pptx), .txt, .md \u2014 \u0432\u043C\u0435\u0441\u0442\u0435 \u0441 \u0440\u0438\u0441\u0443\u043D\u043A\u0430\u043C\u0438" },
                     h(Icon, { name: "upload", size: 14 }),
                     " \u0424\u0430\u0439\u043B \u043B\u0435\u043A\u0446\u0438\u0438")) },
             h("textarea", { class: "text-input", ref: (el) => (ta = el), spellcheck: true, lang: "ru", placeholder: "\u0412\u0441\u0442\u0430\u0432\u044C\u0442\u0435 \u0438\u043B\u0438 \u043D\u0430\u043F\u0435\u0447\u0430\u0442\u0430\u0439\u0442\u0435 \u0442\u0435\u043A\u0441\u0442\u2026", value: () => app.text.value, onInput: (e) => {

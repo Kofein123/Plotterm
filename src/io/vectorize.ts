@@ -140,7 +140,39 @@ function binarizeGlobal(g: Gray): Uint8Array {
   const th = Math.min(200, Math.max(60, otsu(g.data)));
   const out = new Uint8Array(g.data.length);
   for (let i = 0; i < out.length; i++) if (g.data[i] < th) out[i] = 1;
+  addRegionEdges(g, out, th);
   return out;
+}
+
+/**
+ * Граница между серыми заливками (сектор диаграммы, залитый блок): сама заливка светлее порога
+ * и чернилами не считается, но её край нарисовать надо — иначе от круговой диаграммы остаётся
+ * один тёмный сектор. Берём пиксель с тёмной стороны перепада яркости.
+ */
+function addRegionEdges(g: Gray, out: Uint8Array, th: number) {
+  const { w, h, data } = g;
+  const JUMP = 16;
+  for (let y = 1; y < h - 1; y++)
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const v = data[i];
+      // почти бумага или уже чернила — не трогаем
+      if (out[i] || v >= 245 || v < th) continue;
+      let mx = 0, nearInk = false;
+      for (let dy = -2; dy <= 2 && !nearInk; dy++)
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          if (out[ny * w + nx]) { nearInk = true; break; }
+        }
+      for (let d = 0; d < 4 && !nearInk; d++) {
+        const n = d === 0 ? i - 1 : d === 1 ? i + 1 : d === 2 ? i - w : i + w;
+        const diff = data[n] - v;
+        if (diff > mx) mx = diff;
+      }
+      // край буквы — это её же сглаживание: там чернила уже есть, и вторая линия только портит букву
+      if (!nearInk && mx > JUMP) out[i] = 1;
+    }
 }
 
 /** Связные пятна (8 соседей): номер пятна для каждого пикселя, 0 — фон. */
@@ -204,34 +236,69 @@ function length(p: number[]) {
   return l;
 }
 
+/** Толщина штриха: медиана отношения «площадь пятна / длина его скелета» с весом длины скелета. */
+function weightedMedian(area: Float64Array, sk: Float64Array): number {
+  const rows: { v: number; w: number }[] = [];
+  let total = 0;
+  for (let k = 1; k < area.length; k++) {
+    const w = sk[k];
+    if (w < 1) continue;
+    rows.push({ v: area[k] / w, w });
+    total += w;
+  }
+  if (!rows.length) return 1;
+  rows.sort((a, b) => a.v - b.v);
+  let acc = 0;
+  for (const r of rows) {
+    acc += r.w;
+    if (acc >= total / 2) return Math.min(Math.max(1, r.v), 12);
+  }
+  return Math.min(Math.max(1, rows[rows.length - 1].v), 12);
+}
+
+/**
+ * Рабочее разрешение по умолчанию. Картинку с компьютера (схема, диаграмма, скриншот) не уменьшаем:
+ * подпись высотой 20 точек после сжатия вдвое перестаёт быть буквами и выходит закорючками.
+ * У фотографии такой мелочи нет, а шума много, поэтому ей хватает меньшего размера.
+ */
+export function defaultSize(g: Gray): number {
+  const long = Math.max(g.w, g.h);
+  return isCleanImage(g) ? Math.min(2000, Math.max(900, long)) : 1200;
+}
+
 export function vectorize(g: Gray, opts: VectorizeOptions = {}): VectorDrawing {
-  const img = resize(g, opts.size ?? 900);
+  const img = resize(g, opts.size ?? defaultSize(g));
   const { w: W, h: H } = img;
   const bin = isCleanImage(img) ? binarizeGlobal(img) : binarize(img, opts.contrast ?? 0.14);
-  removeSpecks(bin, W, H, Math.max(6, Math.round((W * H) / 40000)));
+  // Скелет и пятна считаем один раз: по ним видно и толщину штриха, и какие пятна залитые.
+  const skel = bin.slice();
+  thin(skel, W, H);
+  const { lab, count } = label(bin, W, H);
+  const area = new Float64Array(count + 1), sk = new Float64Array(count + 1);
+  for (let i = 0; i < bin.length; i++) if (lab[i]) { area[lab[i]]++; if (skel[i]) sk[lab[i]]++; }
+  // Толщина штриха = площадь пятна / длина его скелета, по всем пятнам медианой с весом длины скелета.
+  // Среднее по всей картинке не годится: одно залитое место (сектор диаграммы) перетянуло бы его на себя,
+  // и тогда подписи рядом считались бы мусором — из-за этого они и превращались в закорючки.
+  const strokeW = weightedMedian(area, sk);
+  removeSpecks(bin, W, H, Math.max(4, Math.round(strokeW * strokeW)));
   const mode = opts.mode ?? 'lines';
-  if (mode === 'lines') thin(bin, W, H);
+  if (mode === 'lines') bin.set(skel);
   else {
     // скелет — для тонких пятен, контур — для толстых (средняя линия залитого круга — это точка, а не круг)
-    const skel = bin.slice();
-    thin(skel, W, H);
-    const { lab, count } = label(bin, W, H);
-    const area = new Float64Array(count + 1), sk = new Float64Array(count + 1);
-    for (let i = 0; i < bin.length; i++) if (lab[i]) { area[lab[i]]++; if (skel[i]) sk[lab[i]]++; }
-    const thick = Math.max(5, W / 120);
+    const thick = Math.max(5, strokeW * 4);
     const outline = (k: number) => mode === 'outline' || area[k] / Math.max(1, sk[k]) > thick;
     const res = new Uint8Array(W * H);
     for (let i = 0; i < bin.length; i++) {
       const k = lab[i];
-      if (!k) continue;
+      if (!k || !bin[i]) continue;
       if (outline(k) ? isEdge(bin, W, H, i) : skel[i]) res[i] = 1;
     }
     thin(res, W, H);
     bin.set(res);
   }
   pruneStairs(bin, W, H);
-  const raw = trace(bin, W, H, Math.max(3, W / 150));
-  const minLen = (opts.minLen ?? 0.012) * W;
+  const raw = trace(bin, W, H, Math.max(2, strokeW * 0.8));
+  const minLen = opts.minLen !== undefined ? opts.minLen * W : Math.max(3, strokeW);
   const paths: number[][] = [];
   for (const p of raw) {
     if (p.length < 4 || length(p) < minLen) continue;
