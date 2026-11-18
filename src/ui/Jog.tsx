@@ -102,20 +102,22 @@ export function Jog(props: { compact?: boolean }) {
       {() =>
         app.calib.value.cornerSet ? (
           <Toggle value={() => clampJog.value} onChange={(v) => (clampJog.value = v)} label="Не выезжать за лист" hint="После калибровки каретка не уйдёт за границы листа" />
-        ) : (
-          <div class="jog-flip">
-            <div class="muted small">
-              До калибровки — осторожно у краёв. Каретка поехала не туда, куда стрелка? Если ← → двигают ручку вверх-вниз по тетради —
-              «Повернуть оси»; если просто в обратную сторону — переверните ось.
-            </div>
-            <div class="row wrap">
-              <button class="btn btn-small" title="Тетрадь стоит поперёк осей станка" onClick={() => calibSwapAxes()}>↻ Повернуть оси</button>
-              <button class="btn btn-small" title="← и → поменяются местами" onClick={() => calibFlipAxis(0)}>⇆ лево/право</button>
-              <button class="btn btn-small" title="↑ и ↓ поменяются местами" onClick={() => calibFlipAxis(1)}>⇅ верх/низ</button>
-            </div>
-          </div>
-        )
+        ) : null
       }
+      <div class="jog-flip">
+        <div class="muted small">
+          {() =>
+            app.calib.value.cornerSet
+              ? 'Строки идут поперёк тетради? «Повернуть оси» — и заново шаг 3 «Здесь край»: ноль и ручка останутся.'
+              : 'До калибровки — осторожно у краёв. Каретка поехала не туда, куда стрелка? Если ← → двигают ручку вверх-вниз по тетради — «Повернуть оси»; если просто в обратную сторону — переверните ось.'
+          }
+        </div>
+        <div class="row wrap">
+          <button class="btn btn-small" title="Тетрадь стоит поперёк осей станка: печать повернётся на 90°, лист надо задать заново" onClick={() => calibSwapAxes()}>↻ Повернуть оси</button>
+          <button class="btn btn-small" title="← и → поменяются местами" onClick={() => calibFlipAxis(0)}>⇆ лево/право</button>
+          <button class="btn btn-small" title="↑ и ↓ поменяются местами" onClick={() => calibFlipAxis(1)}>⇅ верх/низ</button>
+        </div>
+      </div>
     </div>
   );
 }
