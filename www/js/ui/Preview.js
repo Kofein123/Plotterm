@@ -7,7 +7,8 @@ import { workToPaper } from "../core/calibration.js";
 import { polyDist2 } from "../core/geometry.js";
 import { Btn, Icon } from "./components.js";
 import { findImageLine, moveImage, removeImage, setImage } from "../core/editmarkup.js";
-import { fmtTime } from "../app/notify.js";
+import { canRedo, canUndo, mark, redo, undo } from "../app/history.js";
+import { fmtTime, toast } from "../app/notify.js";
 const view = signal({ scale: 3, ox: 40, oy: 40 });
 let fitted = false;
 export const pickMode = signal(false);
@@ -27,7 +28,45 @@ function lineStep() {
     return b.length > 1 ? b[1] - b[0] : 10;
 }
 function patchImage(id, patch) {
+    mark();
     app.text.value = setImage(app.text.peek(), id, patch);
+}
+/** Номер страницы, на которую попал рисунок при данной вёрстке. */
+function pageOfImage(text, id) {
+    const pages = app.layoutNow(text).pages;
+    for (let i = 0; i < pages.length; i++)
+        if (pages[i].images.some((im) => im.id === id))
+            return i;
+    return -1;
+}
+/**
+ * Перенести рисунок на соседнюю страницу: двигаем его по тексту абзац за абзацем,
+ * пока вёрстка не положит его на другую страницу.
+ */
+function moveImageToPage(id, dir) {
+    const start = app.text.peek();
+    const from = pageOfImage(start, id);
+    let cur = start;
+    for (let n = 0; n < 60; n++) {
+        const next = moveImage(cur, id, dir);
+        if (next === cur)
+            break;
+        cur = next;
+        const page = pageOfImage(cur, id);
+        if (page >= 0 && page !== from) {
+            mark();
+            app.text.value = cur;
+            app.currentPage.value = Math.max(0, page);
+            return true;
+        }
+    }
+    return false;
+}
+/** Высота строчной буквы: быстрый способ сделать текст мельче или крупнее прямо у листа. */
+function stepTextSize(d) {
+    mark();
+    const x = Math.round((app.typo.peek().xHeight + d) * 10) / 10;
+    app.typo.patch({ xHeight: Math.max(1.5, Math.min(7, x)) });
 }
 /** План, который сейчас показываем: задание (если идёт) или предпросмотр текущей страницы. */
 export function shownPlan() {
@@ -439,8 +478,10 @@ export function Preview() {
             imgDrag = null;
             const [, vv] = toPaper(e);
             const steps = Math.round((vv - d.v) / lineStep());
-            if (steps)
+            if (steps) {
+                mark();
                 app.text.value = moveImage(app.text.peek(), d.id, steps > 0 ? 1 : -1, Math.abs(steps));
+            }
             return;
         }
         if (zoneStart) {
@@ -504,6 +545,10 @@ export function Preview() {
                 h("button", { class: "icon-btn", title: "\u0421\u043B\u0435\u0434\u0443\u044E\u0449\u0430\u044F \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0430", disabled: () => app.currentPage.value >= pages() - 1 || app.job.active, onClick: () => (app.currentPage.value = Math.min(pages() - 1, app.currentPage.peek() + 1)) },
                     h(Icon, { name: "right", size: 16 }))),
             h("div", { class: "preview-tools" },
+                h("button", { class: "icon-btn", title: "\u041E\u0442\u043C\u0435\u043D\u0438\u0442\u044C (Ctrl+Z)", disabled: () => !canUndo.value, onClick: () => undo() },
+                    h(Icon, { name: "undo", size: 16 })),
+                h("button", { class: "icon-btn", title: "\u0412\u0435\u0440\u043D\u0443\u0442\u044C (Ctrl+Y)", disabled: () => !canRedo.value, onClick: () => redo() },
+                    h(Icon, { name: "redo", size: 16 })),
                 h("button", { class: () => 'chip' + (app.prefs.value.showTravel ? ' on' : ''), title: "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u0445\u043E\u043B\u043E\u0441\u0442\u044B\u0435 \u0445\u043E\u0434\u044B (\u0440\u0443\u0447\u043A\u0430 \u043F\u043E\u0434\u043D\u044F\u0442\u0430)", onClick: () => app.prefs.patch({ showTravel: !app.prefs.peek().showTravel }) }, "\u0425\u043E\u043B\u043E\u0441\u0442\u043E\u0439 \u0445\u043E\u0434"),
                 h("button", { class: () => 'chip' + (editMode.value ? ' on' : ''), title: "\u041F\u0440\u0430\u0432\u043A\u0430 \u043B\u0438\u0441\u0442\u0430: \u0449\u0451\u043B\u043A\u043D\u0438\u0442\u0435 \u043F\u043E \u0440\u0438\u0441\u0443\u043D\u043A\u0443, \u0447\u0442\u043E\u0431\u044B \u043F\u0435\u0440\u0435\u0434\u0432\u0438\u043D\u0443\u0442\u044C \u0435\u0433\u043E, \u0438\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u0448\u0438\u0440\u0438\u043D\u0443 \u0438\u043B\u0438 \u0443\u0431\u0440\u0430\u0442\u044C", onClick: () => {
                         editMode.value = !editMode.peek();
@@ -525,7 +570,20 @@ export function Preview() {
             const id = selImage.value;
             const info = id ? findImageLine(app.text.value, id) : null;
             if (!id || !info)
-                return h("span", null, "\u0429\u0451\u043B\u043A\u043D\u0438\u0442\u0435 \u043F\u043E \u0440\u0438\u0441\u0443\u043D\u043A\u0443 \u043D\u0430 \u043B\u0438\u0441\u0442\u0435: \u0435\u0433\u043E \u043C\u043E\u0436\u043D\u043E \u043F\u0435\u0440\u0435\u0434\u0432\u0438\u043D\u0443\u0442\u044C \u043C\u044B\u0448\u044C\u044E, \u0441\u0443\u0437\u0438\u0442\u044C, \u043D\u0430\u0440\u0438\u0441\u043E\u0432\u0430\u0442\u044C \u043A\u0430\u0440\u0430\u043D\u0434\u0430\u0448\u043E\u043C \u0438\u043B\u0438 \u0443\u0431\u0440\u0430\u0442\u044C.");
+                return (h("span", { class: "row wrap" },
+                    h("span", null, "\u0429\u0451\u043B\u043A\u043D\u0438\u0442\u0435 \u043F\u043E \u0440\u0438\u0441\u0443\u043D\u043A\u0443: \u0435\u0433\u043E \u043C\u043E\u0436\u043D\u043E \u0442\u044F\u043D\u0443\u0442\u044C \u043C\u044B\u0448\u044C\u044E, \u0441\u0443\u0437\u0438\u0442\u044C, \u043F\u0435\u0440\u0435\u043D\u0435\u0441\u0442\u0438 \u043D\u0430 \u0434\u0440\u0443\u0433\u0443\u044E \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 \u0438\u043B\u0438 \u0443\u0431\u0440\u0430\u0442\u044C."),
+                    h("span", { title: "\u0420\u0430\u0437\u043C\u0435\u0440 \u043B\u0438\u0441\u0442\u0430 \u043C\u0435\u043D\u044F\u0435\u0442\u0441\u044F \u043D\u0430 \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \u00AB\u0411\u0443\u043C\u0430\u0433\u0430\u00BB" },
+                        "\u041B\u0438\u0441\u0442 ",
+                        Math.round(app.paper.value.width),
+                        "\u00D7",
+                        Math.round(app.paper.value.height),
+                        " \u043C\u043C"),
+                    h("span", null,
+                        "\u0422\u0435\u043A\u0441\u0442 ",
+                        app.typo.value.xHeight.toFixed(1),
+                        " \u043C\u043C"),
+                    h(Btn, { small: true, onClick: () => stepTextSize(-0.2) }, "\u043C\u0435\u043B\u044C\u0447\u0435"),
+                    h(Btn, { small: true, onClick: () => stepTextSize(0.2) }, "\u043A\u0440\u0443\u043F\u043D\u0435\u0435")));
             const w = info.width;
             return (h("span", { class: "row wrap" },
                 h("span", null,
@@ -534,8 +592,10 @@ export function Preview() {
                     " %"),
                 h(Btn, { small: true, onClick: () => patchImage(id, { width: Math.max(0.1, Math.round((w - 0.1) * 10) / 10) }), disabled: () => w <= 0.1 }, "\u0443\u0436\u0435"),
                 h(Btn, { small: true, onClick: () => patchImage(id, { width: Math.min(1, Math.round((w + 0.1) * 10) / 10) }), disabled: () => w >= 1 }, "\u0448\u0438\u0440\u0435"),
-                h(Btn, { small: true, onClick: () => (app.text.value = moveImage(app.text.peek(), id, -1)) }, "\u0432\u044B\u0448\u0435"),
-                h(Btn, { small: true, onClick: () => (app.text.value = moveImage(app.text.peek(), id, 1)) }, "\u043D\u0438\u0436\u0435"),
+                h(Btn, { small: true, onClick: () => { mark(); app.text.value = moveImage(app.text.peek(), id, -1); } }, "\u0432\u044B\u0448\u0435"),
+                h(Btn, { small: true, onClick: () => { mark(); app.text.value = moveImage(app.text.peek(), id, 1); } }, "\u043D\u0438\u0436\u0435"),
+                h(Btn, { small: true, title: "\u041F\u0435\u0440\u0435\u043D\u0435\u0441\u0442\u0438 \u043D\u0430 \u043F\u0440\u0435\u0434\u044B\u0434\u0443\u0449\u0443\u044E \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443", onClick: () => moveImageToPage(id, -1) || toast('Рисунок уже на первой странице.', 'info') }, "\u2190 \u0441\u0442\u0440."),
+                h(Btn, { small: true, title: "\u041F\u0435\u0440\u0435\u043D\u0435\u0441\u0442\u0438 \u043D\u0430 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0443\u044E \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443", onClick: () => moveImageToPage(id, 1) || toast('Дальше текста нет — рисунок остался на месте.', 'info') }, "\u0441\u0442\u0440. \u2192"),
                 h(Btn, { small: true, kind: info.tool === 'pen' ? 'primary' : 'ghost', onClick: () => patchImage(id, { tool: 'pen' }) }, "\u0440\u0443\u0447\u043A\u043E\u0439"),
                 h(Btn, { small: true, kind: info.tool === 'pencil' ? 'primary' : 'ghost', onClick: () => patchImage(id, { tool: 'pencil' }) }, "\u043A\u0430\u0440\u0430\u043D\u0434\u0430\u0448\u043E\u043C"),
                 h(Btn, { small: true, kind: info.tool === 'space' ? 'primary' : 'ghost', onClick: () => patchImage(id, { tool: 'space' }) }, "\u043C\u0435\u0441\u0442\u043E"),

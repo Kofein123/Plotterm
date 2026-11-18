@@ -2,6 +2,7 @@ import { h, listen } from "./dom.js";
 import { app } from "../app/state.js";
 import { toasts } from "../app/notify.js";
 import { startPrint, jogStep, jogZ, jogContinuousStart, jogContinuousStop } from "../app/actions.js";
+import { redo, startHistory, undo } from "../app/history.js";
 import { Preview } from "./Preview.js";
 import { ControlPanel, statusLabel } from "./ControlPanel.js";
 import { Icon } from "./components.js";
@@ -100,6 +101,20 @@ function hotkeys() {
             job.stop();
             return;
         }
+        // отмена и возврат работают и в поле текста
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+            e.preventDefault();
+            if (e.shiftKey)
+                redo();
+            else
+                undo();
+            return;
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+            e.preventDefault();
+            redo();
+            return;
+        }
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
             e.preventDefault();
             if (!job.active)
@@ -179,6 +194,7 @@ function hotkeys() {
 }
 export function App() {
     hotkeys();
+    startHistory();
     return (h("div", { class: "app" },
         h(StatusBar, null),
         h("main", { class: "main" },

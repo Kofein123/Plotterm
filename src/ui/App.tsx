@@ -2,6 +2,7 @@ import { h, listen } from './dom.ts';
 import { app } from '../app/state.ts';
 import { toasts } from '../app/notify.ts';
 import { startPrint, jogStep, jogZ, jogContinuousStart, jogContinuousStop } from '../app/actions.ts';
+import { redo, startHistory, undo } from '../app/history.ts';
 import { Preview } from './Preview.tsx';
 import { ControlPanel, statusLabel } from './ControlPanel.tsx';
 import { Icon } from './components.tsx';
@@ -123,6 +124,18 @@ function hotkeys() {
       job.stop();
       return;
     }
+    // отмена и возврат работают и в поле текста
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      if (e.shiftKey) redo();
+      else undo();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+      e.preventDefault();
+      redo();
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
       e.preventDefault();
       if (!job.active) startPrint({ kind: 'all' });
@@ -182,6 +195,7 @@ function hotkeys() {
 
 export function App() {
   hotkeys();
+  startHistory();
   return (
     <div class="app">
       <StatusBar />
