@@ -9,6 +9,16 @@ export interface Stroke {
   tool?: 'pencil';
 }
 
+/** Рисунок на странице: где он лёг и из какой строки разметки взят — для правки в предпросмотре. */
+export interface ImageBox {
+  id: string;
+  u: number;
+  v: number;
+  w: number;
+  h: number;
+  tool: 'pen' | 'pencil' | 'space';
+}
+
 export interface PageLayout {
   index: number;
   strokes: Stroke[];
@@ -19,6 +29,8 @@ export interface PageLayout {
   mirrored: boolean;
   /** базовые линии строк (v), для предпросмотра */
   baselines: number[];
+  /** рисунки страницы с их местом на листе */
+  images: ImageBox[];
 }
 
 /** Экземпляр буквы на странице: штрихи уже в бумажных координатах (мм). */

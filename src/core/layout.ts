@@ -150,7 +150,7 @@ export function layoutText(inp: LayoutInput): LayoutResult {
   let prevSlot = -10;
   const newPage = () => {
     const m = marginsFor(pages.length);
-    page = { index: pages.length, strokes: [], usedLines: 0, totalLines: baselines.length, mirrored: m.mirrored, baselines };
+    page = { index: pages.length, strokes: [], usedLines: 0, totalLines: baselines.length, mirrored: m.mirrored, baselines, images: [] };
     pages.push(page);
     slot = pages.length === 1 ? Math.max(0, Math.min(baselines.length - 1, paper.startLine - 1)) : 0;
     page.usedLines = slot;
@@ -423,6 +423,7 @@ export function layoutText(inp: LayoutInput): LayoutResult {
         pg.strokes.push(tool === 'pencil' ? { pts, line: 0, tool: 'pencil' } : { pts, line: 0 });
       }
     }
+    pg.images.push({ id, u: left, v: top, w, h, tool });
     slot += lines;
     pg.usedLines = slot;
   }

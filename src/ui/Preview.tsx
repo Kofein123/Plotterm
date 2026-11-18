@@ -7,12 +7,34 @@ import { workToPaper } from '../core/calibration.ts';
 import { polyDist2 } from '../core/geometry.ts';
 import type { Plan } from '../core/plan.ts';
 import { Btn, Icon } from './components.tsx';
+import { findImageLine, moveImage, removeImage, setImage } from '../core/editmarkup.ts';
+import type { ImageBox } from '../core/types.ts';
+import type { ImageTool } from '../core/markup.ts';
 import { fmtTime } from '../app/notify.ts';
 
 const view = signal({ scale: 3, ox: 40, oy: 40 });
 let fitted = false;
 export const pickMode = signal(false);
 export const picked = signal<number | null>(null);
+/** правка листа: по рисунку можно щёлкнуть и поменять его прямо в предпросмотре */
+export const editMode = signal(false);
+export const selImage = signal<string | null>(null);
+
+/** Рисунки текущей страницы с их местом на листе. */
+function pageImages(): ImageBox[] {
+  if (app.source.value.kind !== 'text') return [];
+  return app.layout.value.pages[app.currentPage.value]?.images ?? [];
+}
+
+/** Шаг строки на странице — на столько рисунок сдвигается за один «этаж» при перетаскивании. */
+function lineStep(): number {
+  const b = app.layout.peek().pages[app.currentPage.peek()]?.baselines ?? [];
+  return b.length > 1 ? b[1] - b[0] : 10;
+}
+
+function patchImage(id: string, patch: { width?: number; tool?: ImageTool }) {
+  app.text.value = setImage(app.text.peek(), id, patch);
+}
 
 /** План, который сейчас показываем: задание (если идёт) или предпросмотр текущей страницы. */
 export function shownPlan(): Plan | null {
@@ -204,6 +226,29 @@ export function Preview() {
       }
     }
 
+    // правка: рамки рисунков
+    if (editMode.peek() && !jobActive) {
+      const sel = selImage.peek();
+      for (const im of pageImages()) {
+        const on = im.id === sel;
+        ctx.strokeStyle = on ? colors.current : colors.travel;
+        ctx.lineWidth = Math.max(0.25, px * (on ? 2 : 1.2));
+        ctx.setLineDash(on ? [] : [2, 2]);
+        const x = Math.min(tu(im.u), tu(im.u + im.w));
+        const y = Math.min(tv(im.v), tv(im.v + im.h));
+        ctx.strokeRect(x, y, im.w, im.h);
+        ctx.setLineDash([]);
+        if (on) {
+          ctx.fillStyle = colors.current;
+          for (const [cx, cy] of [[x, y], [x + im.w, y], [x, y + im.h], [x + im.w, y + im.h]]) {
+            ctx.beginPath();
+            ctx.arc(cx, cy, Math.max(0.6, px * 4), 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+    }
+
     // зона печати
     const zr = app.zoneMode.peek() && !jobActive ? zoneDraft.peek() ?? app.printZone.peek() : null;
     if (zr) {
@@ -330,6 +375,16 @@ export function Preview() {
     return [(e.clientX - r.left - v.ox) / v.scale, (e.clientY - r.top - v.oy) / v.scale];
   };
   let zoneStart: [number, number] | null = null;
+  /** Рисунок под точкой листа (мм). */
+  const imageAt = (u: number, v: number): ImageBox | null => {
+    const p = app.paper.peek();
+    const uu = p.rotate180 ? p.width - u : u;
+    const vv = p.rotate180 ? p.height - v : v;
+    for (const im of pageImages()) if (uu >= im.u && uu <= im.u + im.w && vv >= im.v && vv <= im.v + im.h) return im;
+    return null;
+  };
+  /** перетаскивание рисунка: с какого v начали и какой рисунок тянем */
+  let imgDrag: { id: string; v: number } | null = null;
   const onDown = (e: PointerEvent) => {
     canvas.setPointerCapture(e.pointerId);
     // режим «Зона»: левой кнопкой (или пальцем) — выделение, колесо и правая/средняя кнопка — как обычно
@@ -337,6 +392,16 @@ export function Preview() {
       zoneStart = toPaper(e);
       zoneDraft.value = null;
       return;
+    }
+    if (editMode.peek() && !app.job.active && e.button === 0) {
+      const [u, vv] = toPaper(e);
+      const im = imageAt(u, vv);
+      if (im) {
+        selImage.value = im.id;
+        imgDrag = { id: im.id, v: vv };
+        return;
+      }
+      selImage.value = null;
     }
     const v = view.peek();
     drag = { x: e.clientX, y: e.clientY, ox: v.ox, oy: v.oy, moved: false };
@@ -355,6 +420,14 @@ export function Preview() {
     if (drag.moved) view.value = { ...view.peek(), ox: drag.ox + dx, oy: drag.oy + dy };
   };
   const onUp = (e: PointerEvent) => {
+    if (imgDrag) {
+      const d = imgDrag;
+      imgDrag = null;
+      const [, vv] = toPaper(e);
+      const steps = Math.round((vv - d.v) / lineStep());
+      if (steps) app.text.value = moveImage(app.text.peek(), d.id, steps > 0 ? 1 : -1, Math.abs(steps));
+      return;
+    }
     if (zoneStart) {
       const z = zoneDraft.peek();
       zoneStart = null;
@@ -429,6 +502,16 @@ export function Preview() {
             Холостой ход
           </button>
           <button
+            class={() => 'chip' + (editMode.value ? ' on' : '')}
+            title="Правка листа: щёлкните по рисунку, чтобы передвинуть его, изменить ширину или убрать"
+            onClick={() => {
+              editMode.value = !editMode.peek();
+              if (!editMode.peek()) selImage.value = null;
+            }}
+          >
+            Правка
+          </button>
+          <button
             class={() => 'chip' + (pickMode.value ? ' on' : '')}
             title="Выбрать место на листе и допечатать с него (если ручка сбилась или кончилась)"
             onClick={() => {
@@ -452,6 +535,40 @@ export function Preview() {
                   ? 'Напечатается только то, что внутри рамки. Потяните заново, чтобы выбрать другую зону.'
                   : 'Потяните мышью или пальцем по листу — выделите зону, которую печатать.'}
             </span>
+          </div>
+        ) : null
+      }
+      {() =>
+        editMode.value && !pickMode.value ? (
+          <div class="pick-bar">
+            {() => {
+              const id = selImage.value;
+              const info = id ? findImageLine(app.text.value, id) : null;
+              if (!id || !info) return <span>Щёлкните по рисунку на листе: его можно передвинуть мышью, сузить, нарисовать карандашом или убрать.</span>;
+              const w = info.width;
+              return (
+                <span class="row wrap">
+                  <span>Рисунок {Math.round(w * 100)} %</span>
+                  <Btn small onClick={() => patchImage(id, { width: Math.max(0.1, Math.round((w - 0.1) * 10) / 10) })} disabled={() => w <= 0.1}>уже</Btn>
+                  <Btn small onClick={() => patchImage(id, { width: Math.min(1, Math.round((w + 0.1) * 10) / 10) })} disabled={() => w >= 1}>шире</Btn>
+                  <Btn small onClick={() => (app.text.value = moveImage(app.text.peek(), id, -1))}>выше</Btn>
+                  <Btn small onClick={() => (app.text.value = moveImage(app.text.peek(), id, 1))}>ниже</Btn>
+                  <Btn small kind={info.tool === 'pen' ? 'primary' : 'ghost'} onClick={() => patchImage(id, { tool: 'pen' })}>ручкой</Btn>
+                  <Btn small kind={info.tool === 'pencil' ? 'primary' : 'ghost'} onClick={() => patchImage(id, { tool: 'pencil' })}>карандашом</Btn>
+                  <Btn small kind={info.tool === 'space' ? 'primary' : 'ghost'} onClick={() => patchImage(id, { tool: 'space' })}>место</Btn>
+                  <Btn
+                    small
+                    kind="ghost"
+                    onClick={() => {
+                      app.text.value = removeImage(app.text.peek(), id);
+                      selImage.value = null;
+                    }}
+                  >
+                    убрать
+                  </Btn>
+                </span>
+              );
+            }}
           </div>
         ) : null
       }

@@ -6,11 +6,29 @@ import { simInk, printFromStroke } from "../app/actions.js";
 import { workToPaper } from "../core/calibration.js";
 import { polyDist2 } from "../core/geometry.js";
 import { Btn, Icon } from "./components.js";
+import { findImageLine, moveImage, removeImage, setImage } from "../core/editmarkup.js";
 import { fmtTime } from "../app/notify.js";
 const view = signal({ scale: 3, ox: 40, oy: 40 });
 let fitted = false;
 export const pickMode = signal(false);
 export const picked = signal(null);
+/** правка листа: по рисунку можно щёлкнуть и поменять его прямо в предпросмотре */
+export const editMode = signal(false);
+export const selImage = signal(null);
+/** Рисунки текущей страницы с их местом на листе. */
+function pageImages() {
+    if (app.source.value.kind !== 'text')
+        return [];
+    return app.layout.value.pages[app.currentPage.value]?.images ?? [];
+}
+/** Шаг строки на странице — на столько рисунок сдвигается за один «этаж» при перетаскивании. */
+function lineStep() {
+    const b = app.layout.peek().pages[app.currentPage.peek()]?.baselines ?? [];
+    return b.length > 1 ? b[1] - b[0] : 10;
+}
+function patchImage(id, patch) {
+    app.text.value = setImage(app.text.peek(), id, patch);
+}
 /** План, который сейчас показываем: задание (если идёт) или предпросмотр текущей страницы. */
 export function shownPlan() {
     const st = app.job.status.value;
@@ -215,6 +233,28 @@ export function Preview() {
                 ctx.stroke();
             }
         }
+        // правка: рамки рисунков
+        if (editMode.peek() && !jobActive) {
+            const sel = selImage.peek();
+            for (const im of pageImages()) {
+                const on = im.id === sel;
+                ctx.strokeStyle = on ? colors.current : colors.travel;
+                ctx.lineWidth = Math.max(0.25, px * (on ? 2 : 1.2));
+                ctx.setLineDash(on ? [] : [2, 2]);
+                const x = Math.min(tu(im.u), tu(im.u + im.w));
+                const y = Math.min(tv(im.v), tv(im.v + im.h));
+                ctx.strokeRect(x, y, im.w, im.h);
+                ctx.setLineDash([]);
+                if (on) {
+                    ctx.fillStyle = colors.current;
+                    for (const [cx, cy] of [[x, y], [x + im.w, y], [x, y + im.h], [x + im.w, y + im.h]]) {
+                        ctx.beginPath();
+                        ctx.arc(cx, cy, Math.max(0.6, px * 4), 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            }
+        }
         // зона печати
         const zr = app.zoneMode.peek() && !jobActive ? zoneDraft.peek() ?? app.printZone.peek() : null;
         if (zr) {
@@ -344,6 +384,18 @@ export function Preview() {
         return [(e.clientX - r.left - v.ox) / v.scale, (e.clientY - r.top - v.oy) / v.scale];
     };
     let zoneStart = null;
+    /** Рисунок под точкой листа (мм). */
+    const imageAt = (u, v) => {
+        const p = app.paper.peek();
+        const uu = p.rotate180 ? p.width - u : u;
+        const vv = p.rotate180 ? p.height - v : v;
+        for (const im of pageImages())
+            if (uu >= im.u && uu <= im.u + im.w && vv >= im.v && vv <= im.v + im.h)
+                return im;
+        return null;
+    };
+    /** перетаскивание рисунка: с какого v начали и какой рисунок тянем */
+    let imgDrag = null;
     const onDown = (e) => {
         canvas.setPointerCapture(e.pointerId);
         // режим «Зона»: левой кнопкой (или пальцем) — выделение, колесо и правая/средняя кнопка — как обычно
@@ -351,6 +403,16 @@ export function Preview() {
             zoneStart = toPaper(e);
             zoneDraft.value = null;
             return;
+        }
+        if (editMode.peek() && !app.job.active && e.button === 0) {
+            const [u, vv] = toPaper(e);
+            const im = imageAt(u, vv);
+            if (im) {
+                selImage.value = im.id;
+                imgDrag = { id: im.id, v: vv };
+                return;
+            }
+            selImage.value = null;
         }
         const v = view.peek();
         drag = { x: e.clientX, y: e.clientY, ox: v.ox, oy: v.oy, moved: false };
@@ -372,6 +434,15 @@ export function Preview() {
             view.value = { ...view.peek(), ox: drag.ox + dx, oy: drag.oy + dy };
     };
     const onUp = (e) => {
+        if (imgDrag) {
+            const d = imgDrag;
+            imgDrag = null;
+            const [, vv] = toPaper(e);
+            const steps = Math.round((vv - d.v) / lineStep());
+            if (steps)
+                app.text.value = moveImage(app.text.peek(), d.id, steps > 0 ? 1 : -1, Math.abs(steps));
+            return;
+        }
         if (zoneStart) {
             const z = zoneDraft.peek();
             zoneStart = null;
@@ -434,6 +505,11 @@ export function Preview() {
                     h(Icon, { name: "right", size: 16 }))),
             h("div", { class: "preview-tools" },
                 h("button", { class: () => 'chip' + (app.prefs.value.showTravel ? ' on' : ''), title: "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u0445\u043E\u043B\u043E\u0441\u0442\u044B\u0435 \u0445\u043E\u0434\u044B (\u0440\u0443\u0447\u043A\u0430 \u043F\u043E\u0434\u043D\u044F\u0442\u0430)", onClick: () => app.prefs.patch({ showTravel: !app.prefs.peek().showTravel }) }, "\u0425\u043E\u043B\u043E\u0441\u0442\u043E\u0439 \u0445\u043E\u0434"),
+                h("button", { class: () => 'chip' + (editMode.value ? ' on' : ''), title: "\u041F\u0440\u0430\u0432\u043A\u0430 \u043B\u0438\u0441\u0442\u0430: \u0449\u0451\u043B\u043A\u043D\u0438\u0442\u0435 \u043F\u043E \u0440\u0438\u0441\u0443\u043D\u043A\u0443, \u0447\u0442\u043E\u0431\u044B \u043F\u0435\u0440\u0435\u0434\u0432\u0438\u043D\u0443\u0442\u044C \u0435\u0433\u043E, \u0438\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u0448\u0438\u0440\u0438\u043D\u0443 \u0438\u043B\u0438 \u0443\u0431\u0440\u0430\u0442\u044C", onClick: () => {
+                        editMode.value = !editMode.peek();
+                        if (!editMode.peek())
+                            selImage.value = null;
+                    } }, "\u041F\u0440\u0430\u0432\u043A\u0430"),
                 h("button", { class: () => 'chip' + (pickMode.value ? ' on' : ''), title: "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u043C\u0435\u0441\u0442\u043E \u043D\u0430 \u043B\u0438\u0441\u0442\u0435 \u0438 \u0434\u043E\u043F\u0435\u0447\u0430\u0442\u0430\u0442\u044C \u0441 \u043D\u0435\u0433\u043E (\u0435\u0441\u043B\u0438 \u0440\u0443\u0447\u043A\u0430 \u0441\u0431\u0438\u043B\u0430\u0441\u044C \u0438\u043B\u0438 \u043A\u043E\u043D\u0447\u0438\u043B\u0430\u0441\u044C)", onClick: () => {
                         pickMode.value = !pickMode.peek();
                         if (!pickMode.peek())
@@ -445,6 +521,29 @@ export function Preview() {
             h("span", null, () => app.printZone.value
                 ? 'Напечатается только то, что внутри рамки. Потяните заново, чтобы выбрать другую зону.'
                 : 'Потяните мышью или пальцем по листу — выделите зону, которую печатать.'))) : null,
+        () => editMode.value && !pickMode.value ? (h("div", { class: "pick-bar" }, () => {
+            const id = selImage.value;
+            const info = id ? findImageLine(app.text.value, id) : null;
+            if (!id || !info)
+                return h("span", null, "\u0429\u0451\u043B\u043A\u043D\u0438\u0442\u0435 \u043F\u043E \u0440\u0438\u0441\u0443\u043D\u043A\u0443 \u043D\u0430 \u043B\u0438\u0441\u0442\u0435: \u0435\u0433\u043E \u043C\u043E\u0436\u043D\u043E \u043F\u0435\u0440\u0435\u0434\u0432\u0438\u043D\u0443\u0442\u044C \u043C\u044B\u0448\u044C\u044E, \u0441\u0443\u0437\u0438\u0442\u044C, \u043D\u0430\u0440\u0438\u0441\u043E\u0432\u0430\u0442\u044C \u043A\u0430\u0440\u0430\u043D\u0434\u0430\u0448\u043E\u043C \u0438\u043B\u0438 \u0443\u0431\u0440\u0430\u0442\u044C.");
+            const w = info.width;
+            return (h("span", { class: "row wrap" },
+                h("span", null,
+                    "\u0420\u0438\u0441\u0443\u043D\u043E\u043A ",
+                    Math.round(w * 100),
+                    " %"),
+                h(Btn, { small: true, onClick: () => patchImage(id, { width: Math.max(0.1, Math.round((w - 0.1) * 10) / 10) }), disabled: () => w <= 0.1 }, "\u0443\u0436\u0435"),
+                h(Btn, { small: true, onClick: () => patchImage(id, { width: Math.min(1, Math.round((w + 0.1) * 10) / 10) }), disabled: () => w >= 1 }, "\u0448\u0438\u0440\u0435"),
+                h(Btn, { small: true, onClick: () => (app.text.value = moveImage(app.text.peek(), id, -1)) }, "\u0432\u044B\u0448\u0435"),
+                h(Btn, { small: true, onClick: () => (app.text.value = moveImage(app.text.peek(), id, 1)) }, "\u043D\u0438\u0436\u0435"),
+                h(Btn, { small: true, kind: info.tool === 'pen' ? 'primary' : 'ghost', onClick: () => patchImage(id, { tool: 'pen' }) }, "\u0440\u0443\u0447\u043A\u043E\u0439"),
+                h(Btn, { small: true, kind: info.tool === 'pencil' ? 'primary' : 'ghost', onClick: () => patchImage(id, { tool: 'pencil' }) }, "\u043A\u0430\u0440\u0430\u043D\u0434\u0430\u0448\u043E\u043C"),
+                h(Btn, { small: true, kind: info.tool === 'space' ? 'primary' : 'ghost', onClick: () => patchImage(id, { tool: 'space' }) }, "\u043C\u0435\u0441\u0442\u043E"),
+                h(Btn, { small: true, kind: "ghost", onClick: () => {
+                        app.text.value = removeImage(app.text.peek(), id);
+                        selImage.value = null;
+                    } }, "\u0443\u0431\u0440\u0430\u0442\u044C")));
+        })) : null,
         () => pickMode.value ? (h("div", { class: "pick-bar" }, () => picked.value === null ? (h("span", null, "\u0429\u0451\u043B\u043A\u043D\u0438\u0442\u0435 \u043F\u043E \u0431\u0443\u043A\u0432\u0435 \u043D\u0430 \u043B\u0438\u0441\u0442\u0435, \u0441 \u043A\u043E\u0442\u043E\u0440\u043E\u0439 \u043F\u0440\u043E\u0434\u043E\u043B\u0436\u0438\u0442\u044C \u043F\u0435\u0447\u0430\u0442\u044C.")) : (h("span", { class: "row" },
             h("span", null,
                 "\u0412\u044B\u0431\u0440\u0430\u043D \u0448\u0442\u0440\u0438\u0445 ",
