@@ -2,8 +2,11 @@ import type { FontData, StrokeFont, CustomFontRecord, GlyphData } from './types.
 import gostA from './data/gostA.ts';
 import gostB from './data/gostB.ts';
 import propis from './data/propis.ts';
+import caveat from './data/caveat.ts';
 import { synthesizeKazakh } from './kazakh.ts';
 import { deformGlyph, dropOutliers } from './variants.ts';
+
+export const CUSTOM_X_HEIGHT = 100;
 
 function fromData(d: FontData): StrokeFont {
   const glyphs = new Map<string, GlyphData[]>();
@@ -43,7 +46,6 @@ const propisFont: StrokeFont = fillMissing(fromData(propis), gostBFont);
 
 export const BUILTIN_FONTS: StrokeFont[] = [gostAFont, gostBFont, propisFont];
 
-export const CUSTOM_X_HEIGHT = 100;
 
 /**
  * Точки входа и выхода для буквы без них (шрифты из .ttf): вход — самый левый конец штриха внизу буквы,
@@ -365,3 +367,8 @@ export function resolveGlyph(font: StrokeFont, ch: string, variant = 0): Resolve
   vs = font.glyphs.get('?');
   return { glyph: vs?.[0] ?? { w: font.xHeight * 0.6, s: [] }, k: 1, variants: 1, missing: true };
 }
+
+// Caveat собирается тем же путём, что и загруженный шрифт (варианты букв, точки входа и выхода),
+// но лежит в программе и доступен без загрузки файла. Добавляется в конце файла: fromCustom
+// пользуется объявлениями ниже, а до конца модуля они ещё не готовы.
+BUILTIN_FONTS.push({ ...fromCustom(caveat, BUILTIN_FONTS), builtin: true });

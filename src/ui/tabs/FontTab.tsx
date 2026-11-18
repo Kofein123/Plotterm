@@ -13,8 +13,9 @@ export function FontTab() {
           <Select value={fontId.get} onChange={fontId.set} options={() => app.fonts.value.map((f) => ({ value: f.id, label: f.name + (f.builtin ? '' : ' — мой почерк') }))} />
         </Field>
         <div class="muted small">
-          Плоттер рисует линией, поэтому нужны однолинейные шрифты. Встроены ГОСТ А и Б (кириллица, латиница, казахские буквы).
-          Свой почерк — на вкладке «Мой почерк».
+          Плоттер рисует линией, поэтому нужны однолинейные шрифты. Встроены ГОСТ А и Б, пропись и рукописный Caveat
+          (кириллица, латиница, казахские буквы). Свой почерк — на вкладке «Мой почерк»: распечатать лист-шаблон,
+          заполнить своей ручкой и сфотографировать.
         </div>
         <Btn small kind="primary" onClick={() => importFont()} disabled={() => !!importBusy.value}>
           <Icon name="upload" size={14} /> {() => importBusy.value ?? 'Загрузить свой шрифт (.ttf .otf .woff .svg)'}
