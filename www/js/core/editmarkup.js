@@ -28,6 +28,10 @@ export function setImage(text, id, patch) {
     lines[cur.index] = compose(id, { ...cur, ...patch });
     return lines.join('\n');
 }
+/** Лишние пустые строки, оставшиеся от перестановки, схлопываем в одну. */
+function tidy(lines) {
+    return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
 /** Убрать рисунок вместе с его строкой (и пустой строкой, если та осталась одна от него). */
 export function removeImage(text, id) {
     const cur = findImageLine(text, id);
@@ -35,9 +39,7 @@ export function removeImage(text, id) {
         return text;
     const lines = text.split('\n');
     lines.splice(cur.index, 1);
-    if (lines[cur.index] === '' && lines[cur.index - 1] === '')
-        lines.splice(cur.index, 1);
-    return lines.join('\n');
+    return tidy(lines);
 }
 /**
  * Передвинуть рисунок по тексту: dir < 0 — выше, dir > 0 — ниже.
@@ -57,7 +59,7 @@ export function moveImage(text, id, dir, steps = 1) {
             return out;
         const [img] = lines.splice(cur.index, 1);
         lines.splice(j, 0, img);
-        out = lines.join('\n');
+        out = tidy(lines);
     }
     return out;
 }

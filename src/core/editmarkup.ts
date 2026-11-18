@@ -42,14 +42,18 @@ export function setImage(text: string, id: string, patch: { width?: number; tool
   return lines.join('\n');
 }
 
+/** Лишние пустые строки, оставшиеся от перестановки, схлопываем в одну. */
+function tidy(lines: string[]): string {
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
 /** Убрать рисунок вместе с его строкой (и пустой строкой, если та осталась одна от него). */
 export function removeImage(text: string, id: string): string {
   const cur = findImageLine(text, id);
   if (!cur) return text;
   const lines = text.split('\n');
   lines.splice(cur.index, 1);
-  if (lines[cur.index] === '' && lines[cur.index - 1] === '') lines.splice(cur.index, 1);
-  return lines.join('\n');
+  return tidy(lines);
 }
 
 /**
@@ -67,7 +71,7 @@ export function moveImage(text: string, id: string, dir: -1 | 1, steps = 1): str
     if (j < 0 || j >= lines.length) return out;
     const [img] = lines.splice(cur.index, 1);
     lines.splice(j, 0, img);
-    out = lines.join('\n');
+    out = tidy(lines);
   }
   return out;
 }
