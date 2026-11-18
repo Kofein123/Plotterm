@@ -1,8 +1,10 @@
 import gostA from "./data/gostA.js";
 import gostB from "./data/gostB.js";
 import propis from "./data/propis.js";
+import caveat from "./data/caveat.js";
 import { synthesizeKazakh } from "./kazakh.js";
 import { deformGlyph, dropOutliers } from "./variants.js";
+export const CUSTOM_X_HEIGHT = 100;
 function fromData(d) {
     const glyphs = new Map();
     for (const [ch, g] of Object.entries(d.glyphs))
@@ -36,7 +38,6 @@ const gostBFont = fromData(gostB);
 // У них нет точек входа и выхода, поэтому они пишутся раздельно — как печатные от руки.
 const propisFont = fillMissing(fromData(propis), gostBFont);
 export const BUILTIN_FONTS = [gostAFont, gostBFont, propisFont];
-export const CUSTOM_X_HEIGHT = 100;
 /**
  * Точки входа и выхода для буквы без них (шрифты из .ttf): вход — самый левый конец штриха внизу буквы,
  * выход — самый правый. Буква соединяется с соседями, как в прописи, и слово пишется почти без подъёмов ручки.
@@ -397,3 +398,7 @@ export function resolveGlyph(font, ch, variant = 0) {
     vs = font.glyphs.get('?');
     return { glyph: vs?.[0] ?? { w: font.xHeight * 0.6, s: [] }, k: 1, variants: 1, missing: true };
 }
+// Caveat собирается тем же путём, что и загруженный шрифт (варианты букв, точки входа и выхода),
+// но лежит в программе и доступен без загрузки файла. Добавляется в конце файла: fromCustom
+// пользуется объявлениями ниже, а до конца модуля они ещё не готовы.
+BUILTIN_FONTS.push({ ...fromCustom(caveat, BUILTIN_FONTS), builtin: true });

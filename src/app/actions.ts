@@ -35,7 +35,7 @@ machine.onDisconnect = (reason) => {
 machine.onReset = (unexpected) => {
   if (unexpected && calib.peek().zeroSet) {
     calib.patch({ stale: true });
-    toast('Плата перезагрузилась: ноль мог сбиться. Повторите шаги 2–3 калибровки.', 'warn', 12000);
+    toast('Плата перезагрузилась: ноль листа и ручки мог сбиться. Повторите калибровку (шаги 1–3), иначе ручка может не подняться.', 'warn', 12000);
   }
 };
 
@@ -287,9 +287,18 @@ export async function penDown() {
 
 export async function goZero() {
   if (!needConn()) return;
+  const c = calib.peek();
   try {
-    await machine.send(`G90 G0 Z${fmt(calib.peek().upZ)}`);
-    await machine.send('G0 X0 Y0');
+    if (c.penSet && !c.stale) await machine.send(`G90 G0 Z${fmt(c.upZ)}`);
+    else {
+      // ноль ручки неизвестен (плату перезагружали или шаг 1 не пройден): «поднять до upZ» может
+      // оказаться вообще не подъёмом, и каретка прочертит линию через весь лист. Поднимаем от текущего места.
+      const lift = Math.max(3, Math.abs(c.upZ || 0));
+      if (!confirm(`Положение ручки неизвестно (ноль мог сбиться). Поднять ручку на ${fmt(lift)} мм от текущего места и ехать в ноль?\n\nЕсли ручка уже высоко — нажмите «Отмена» и поднимите её стрелками Z.`)) return;
+      await machine.jog(0, 0, (c.upZ >= 0 ? 1 : -1) * lift, prefs.peek().zFeed);
+      await machine.waitIdle(15000);
+    }
+    await machine.send('G90 G0 X0 Y0');
   } catch (e) {
     jogError(e);
   }
@@ -544,16 +553,21 @@ export function buildJobPages(range: PrintRange, dry: boolean, skipOutside = fal
     const pencil = lines ? null : app.planFor(i, { dryRun: dry, tool: 'pencil', zone, skipOutside });
     const hasPen = !!pen && pen.strokes.length > 0;
     const hasPencil = !!pencil && pencil.strokes.length > 0;
+    // в тетради страницы идут по очереди: правая, потом её оборот — левая (поля зеркалятся)
+    const alt = app.paper.peek().side === 'alternate';
+    const side = !alt ? '' : i % 2 === 1 ? ' — ЛЕВАЯ страница (переверните лист)' : ' — ПРАВАЯ страница';
     if (hasPen) {
       const before = pencilIn
-        ? `Рисунки карандашом готовы. Верните ручку (кончик на той же высоте), положите страницу ${i + 1} и нажмите «Продолжить».`
-        : undefined;
+        ? `Рисунки карандашом готовы. Верните ручку (кончик на той же высоте), положите страницу ${i + 1}${side} и нажмите «Продолжить».`
+        : alt && out.length
+          ? `Страница ${i} готова. Дальше страница ${i + 1}${side}. Положите тетрадь углом страницы в ноль и нажмите «Продолжить».`
+          : undefined;
       out.push({ plan: pen!, pageNo: i, before });
       pencilIn = false;
     }
     if (hasPencil) {
       const before = pencilIn
-        ? `Положите страницу ${i + 1} — карандаш оставьте и нажмите «Продолжить».`
+        ? `Положите страницу ${i + 1}${side} — карандаш оставьте и нажмите «Продолжить».`
         : `Текст страницы ${i + 1} готов. Вставьте КАРАНДАШ вместо ручки (кончик на той же высоте над бумагой) и нажмите «Продолжить» — нарисую рисунки.`;
       out.push({ plan: pencil!, pageNo: i, before });
       pencilIn = true;

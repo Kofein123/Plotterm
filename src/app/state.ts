@@ -25,9 +25,9 @@ export const SAMPLE_TEXT = `# Конспект
 Қазақша да болады: әліппе, ғылым, қала, өнер.`;
 
 export const PAPER_PRESETS: Record<Exclude<PaperTemplate, 'custom'>, { name: string; hint: string; p: Partial<PaperSettings> }> = {
-  a4: { name: 'Чистый лист A4', hint: '210×297', p: { template: 'a4', width: 210, height: 297, marginTop: 15, marginBottom: 15, marginLeft: 20, marginRight: 15, blankLineStep: 8 } },
-  grid: { name: 'Тетрадь в клетку', hint: 'клетка 5 мм, поле справа', p: { template: 'grid', width: 165, height: 205, marginTop: 5, marginBottom: 5, marginLeft: 5, marginRight: 25, cell: 5, gridLineCells: 2 } },
-  ruled: { name: 'Тетрадь в линейку', hint: 'линия 8 мм, поле справа', p: { template: 'ruled', width: 165, height: 205, marginTop: 8, marginBottom: 5, marginLeft: 5, marginRight: 22, rulePitch: 8 } },
+  a4: { name: 'Чистый лист A4', hint: '210×297', p: { template: 'a4', side: 'right', width: 210, height: 297, marginTop: 15, marginBottom: 15, marginLeft: 20, marginRight: 15, blankLineStep: 8 } },
+  grid: { name: 'Тетрадь в клетку', hint: 'клетка 5 мм, 170×205', p: { template: 'grid', side: 'alternate', width: 170, height: 205, marginTop: 5, marginBottom: 5, marginLeft: 5, marginRight: 25, cell: 5, gridLineCells: 2 } },
+  ruled: { name: 'Тетрадь в линейку', hint: 'линия 8 мм, 170×205', p: { template: 'ruled', side: 'alternate', width: 170, height: 205, marginTop: 8, marginBottom: 5, marginLeft: 5, marginRight: 22, rulePitch: 8 } },
 };
 
 const DEFAULT_PAPER: PaperSettings = {

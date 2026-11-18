@@ -18,8 +18,9 @@ test('разметка: рисунок с шириной и инструмент
   const p = parseMarkup('![Рис. 1](img:a1 50% карандаш)\n![](img:b2 место)\n![](img:c3)');
   assert.deepEqual(p[0], { kind: 'image', id: 'a1', caption: 'Рис. 1', width: 0.5, tool: 'pencil' });
   assert.equal(p[1].kind, 'text');
-  assert.deepEqual(p[2], { kind: 'image', id: 'b2', caption: '', width: 0.7, tool: 'space' });
-  assert.deepEqual(p[3], { kind: 'image', id: 'c3', caption: '', width: 0.7, tool: 'pen' });
+  // без процента — во всю ширину строки: мелкую картинку из лекции иначе не разобрать
+  assert.deepEqual(p[2], { kind: 'image', id: 'b2', caption: '', width: 1, tool: 'space' });
+  assert.deepEqual(p[3], { kind: 'image', id: 'c3', caption: '', width: 1, tool: 'pen' });
 });
 
 test('разметка: строки таблицы, разделитель Markdown пропускается', () => {
@@ -147,10 +148,12 @@ test('картинка с компьютера: залитый круг рису
   const line = pts.filter(([x]) => x > 200);
   assert.ok(line.length >= 2);
   for (const [x] of line) assert.ok(Math.abs(x - 230) < 2.5, `${x}`);
-  // по средней линии круг сжимается к центру — так было раньше
+  // по средней линии круг не обводится по краю, а стягивается к центру — за этим и нужен режим auto
   const lines = vectorize({ w: W, h: H, data }, { mode: 'lines' });
-  const lp = lines.paths.flatMap((p) => p.filter((_, i) => i % 2 === 0).map((v) => v * W)).filter((x) => x < 160);
-  assert.ok(Math.max(...lp) - Math.min(...lp) < 60);
+  const lpts = lines.paths.flatMap((p) => { const o: [number, number][] = []; for (let i = 0; i < p.length; i += 2) o.push([p[i] * W, p[i + 1] * W]); return o; })
+    .filter(([x]) => x < 160).map(([x, y]) => Math.hypot(x - 90, y - 100));
+  assert.ok(lpts.length > 0 && lpts.length < ring.length / 4);
+  assert.ok(Math.min(...lpts) < 15);
 });
 
 test('буква с фото: соринка у базовой линии убирается, разрыв по ходу линии склеивается', () => {

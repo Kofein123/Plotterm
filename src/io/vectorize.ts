@@ -26,8 +26,34 @@ export interface VectorizeOptions {
 
 export type VectorMode = 'auto' | 'lines' | 'outline';
 
+/** во сколько раз максимум увеличиваем мелкую картинку перед скелетом */
+const UPSCALE_MAX = 3;
+
+/** Бислинейное увеличение: у мелких букв и тонких линий скелет выходит гладким, а не «лесенкой». */
+function upscale(g: Gray, k: number): Gray {
+  const w = Math.max(1, Math.round(g.w * k)), h = Math.max(1, Math.round(g.h * k));
+  const data = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const sx = (x + 0.5) / k - 0.5, sy = (y + 0.5) / k - 0.5;
+      const x0 = Math.max(0, Math.min(g.w - 1, Math.floor(sx))), y0 = Math.max(0, Math.min(g.h - 1, Math.floor(sy)));
+      const x1 = Math.min(g.w - 1, x0 + 1), y1 = Math.min(g.h - 1, y0 + 1);
+      const fx = Math.min(1, Math.max(0, sx - x0)), fy = Math.min(1, Math.max(0, sy - y0));
+      const a = g.data[y0 * g.w + x0], b = g.data[y0 * g.w + x1], c = g.data[y1 * g.w + x0], d = g.data[y1 * g.w + x1];
+      data[y * w + x] = Math.round(a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy);
+    }
+  return { w, h, data };
+}
+
 function resize(g: Gray, maxSide: number): Gray {
-  const k = Math.min(1, maxSide / Math.max(g.w, g.h));
+  const long = Math.max(g.w, g.h);
+  // картинка из документа часто мелкая (300–500 px): подписи внутри неё тоньше, чем нужно скелету,
+  // и превращаются в закорючки. Увеличиваем до рабочего размера, тогда буквы читаются.
+  if (long < maxSide) {
+    const up = Math.min(UPSCALE_MAX, maxSide / long);
+    return up > 1.05 ? upscale(g, up) : g;
+  }
+  const k = Math.min(1, maxSide / long);
   if (k >= 1) return g;
   const w = Math.max(1, Math.round(g.w * k)), h = Math.max(1, Math.round(g.h * k));
   const data = new Uint8Array(w * h);

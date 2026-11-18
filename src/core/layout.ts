@@ -406,7 +406,7 @@ export function layoutText(inp: LayoutInput): LayoutResult {
     let w = full * frac;
     let h = w * aspect;
     const pageH = step * baselines.length;
-    if (h > pageH * 0.85) { h = pageH * 0.85; w = h / aspect; }
+    if (h > pageH * 0.92) { h = pageH * 0.92; w = h / aspect; }
     const lines = Math.max(1, Math.ceil(h / step + 0.4));
     if (!page || slot + lines > baselines.length) newPage();
     const pg = page!;
