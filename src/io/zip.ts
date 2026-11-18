@@ -1,4 +1,4 @@
-// Минимальное чтение ZIP (нужно для .docx) средствами браузера: DecompressionStream('deflate-raw').
+// Минимальное чтение ZIP (нужно для .docx и .pptx) средствами браузера: DecompressionStream('deflate-raw').
 
 export async function readZipEntry(buf: ArrayBuffer, name: string): Promise<Uint8Array | null> {
   const dv = new DataView(buf);
@@ -42,4 +42,28 @@ async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
   const ds = new DecompressionStream('deflate-raw');
   const stream = new Blob([data as BlobPart]).stream().pipeThrough(ds);
   return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** Имена файлов внутри ZIP: нужны, чтобы найти все слайды презентации. */
+export function listZipEntries(buf: ArrayBuffer): string[] {
+  const dv = new DataView(buf);
+  const bytes = new Uint8Array(buf);
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('это не ZIP/PPTX файл');
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  const out: string[] = [];
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const nameLen = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    out.push(dec.decode(bytes.subarray(p + 46, p + 46 + nameLen)));
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
 }

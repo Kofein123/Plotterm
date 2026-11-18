@@ -1,6 +1,6 @@
 import { h } from '../dom.ts';
 import { app, SAMPLE_TEXT, saveImages, type SubjectProfile } from '../../app/state.ts';
-import { docxToDocument, missingImages, pdfToDocument } from '../../io/document.ts';
+import { docxToDocument, missingImages, pdfToDocument, pptxToDocument } from '../../io/document.ts';
 import { vectorize, type VectorMode, type VectorDrawing } from '../../io/vectorize.ts';
 import type { Gray } from '../../io/templateImport.ts';
 import { signal } from '../reactive.ts';
@@ -10,14 +10,18 @@ import { readTextFile, svgToStrokes } from '../../io/importers.ts';
 import { pickFile, toast, fmtTime } from '../../app/notify.ts';
 
 async function importText() {
-  const f = await pickFile('.pdf,.docx,.txt,.md,.markdown,text/plain,application/pdf');
+  const f = await pickFile('.pdf,.docx,.pptx,.txt,.md,.markdown,text/plain,application/pdf');
   if (!f) return;
   const name = f.name.toLowerCase();
   try {
-    if (name.endsWith('.pdf') || name.endsWith('.docx')) {
+    if (name.endsWith('.pdf') || name.endsWith('.docx') || name.endsWith('.pptx')) {
       toast(`Читаю «${f.name}»: текст и рисунки…`, 'info', 4000);
       const buf = await f.arrayBuffer();
-      const d = name.endsWith('.pdf') ? await pdfToDocument(buf, (m) => toast(m, 'info', 1500)) : await docxToDocument(buf);
+      const d = name.endsWith('.pdf')
+        ? await pdfToDocument(buf, (m) => toast(m, 'info', 1500))
+        : name.endsWith('.pptx')
+          ? await pptxToDocument(buf, (m) => toast(m, 'info', 1500))
+          : await docxToDocument(buf, (m) => toast(m, 'info', 1500));
       await saveImages(d.images.map((im) => ({ ...im, id: im.id })));
       app.text.value = d.text;
       app.source.value = { kind: 'text' };
@@ -46,7 +50,7 @@ async function insertPicture(insert: (s: string) => void) {
   const f = await pickFile('image/*,.svg');
   if (!f) return;
   try {
-    const g = await imageFileToGray(f, 1800);
+    const g = await imageFileToGray(f, 2400);
     const d = vectorize(g, { mode: 'auto' });
     if (!d.paths.length) return toast('На картинке не нашлось линий.', 'warn');
     const id = 'r' + Date.now().toString(36);
@@ -73,7 +77,7 @@ function placeDrawing(d: VectorDrawing) {
 
 function showPicture() {
   if (!lastPic) return;
-  const d = vectorize(lastPic.g, { mode: picMode.peek(), size: 1000 });
+  const d = vectorize(lastPic.g, { mode: picMode.peek() });
   if (!d.paths.length) return toast('На картинке не нашлось линий: попробуйте картинку контрастнее (тёмный рисунок на светлом фоне).', 'warn', 8000);
   app.source.value = { kind: 'drawing', name: lastPic.name, strokes: placeDrawing(d) };
   app.currentPage.value = 0;
@@ -160,7 +164,7 @@ export function TextTab() {
         title="Текст конспекта"
         aside={
           <span class="row">
-            <Btn small kind="ghost" onClick={() => importText()} title="PDF, Word (.docx), .txt, .md — вместе с рисунками"><Icon name="upload" size={14} /> Файл лекции</Btn>
+            <Btn small kind="ghost" onClick={() => importText()} title="PDF, Word (.docx), презентация (.pptx), .txt, .md — вместе с рисунками"><Icon name="upload" size={14} /> Файл лекции</Btn>
           </span>
         }
       >
