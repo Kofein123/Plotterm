@@ -175,7 +175,14 @@ export function Preview() {
     ctx.beginPath();
     const mL = mirrored ? p.marginRight : p.marginLeft;
     const mR = mirrored ? p.marginLeft : p.marginRight;
-    if (p.template !== 'a4') {
+    if (p.spread) {
+      // на развороте поле с красной линией — у внешнего края каждой половины
+      const wide = Math.max(p.marginLeft, p.marginRight);
+      for (const mu of [wide, p.width - wide]) {
+        ctx.moveTo(tu(mu), 0);
+        ctx.lineTo(tu(mu), p.height);
+      }
+    } else if (p.template !== 'a4') {
       const mu = mirrored ? mL : p.width - mR;
       ctx.moveTo(tu(mu), 0);
       ctx.lineTo(tu(mu), p.height);
@@ -185,6 +192,23 @@ export function Preview() {
     }
     ctx.stroke();
     ctx.setLineDash([]);
+
+    // разворот: линия сгиба посередине и затенение половины, которой сейчас не пишем
+    if (p.spread) {
+      const half = p.width / 2;
+      ctx.strokeStyle = colors.margin;
+      ctx.lineWidth = Math.max(0.2, px);
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(tu(half), 0);
+      ctx.lineTo(tu(half), p.height);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const onRight = app.currentPage.peek() % 2 === 1;
+      ctx.fillStyle = 'rgba(120,130,150,0.07)';
+      const x0 = onRight ? 0 : half;
+      ctx.fillRect(Math.min(tu(x0), tu(x0 + half)), 0, half, p.height);
+    }
 
     // откалиброванная область
     if (f.ready) {

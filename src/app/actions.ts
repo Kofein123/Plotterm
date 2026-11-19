@@ -553,15 +553,22 @@ export function buildJobPages(range: PrintRange, dry: boolean, skipOutside = fal
     const pencil = lines ? null : app.planFor(i, { dryRun: dry, tool: 'pencil', zone, skipOutside });
     const hasPen = !!pen && pen.strokes.length > 0;
     const hasPencil = !!pencil && pencil.strokes.length > 0;
-    // в тетради страницы идут по очереди: правая, потом её оборот — левая (поля зеркалятся)
-    const alt = app.paper.peek().side === 'alternate';
-    const side = !alt ? '' : i % 2 === 1 ? ' — ЛЕВАЯ страница (переверните лист)' : ' — ПРАВАЯ страница';
+    // в тетради страницы идут по очереди: правая, потом её оборот — левая (поля зеркалятся);
+    // на развороте обе страницы лежат разом, и лист переворачивается только после правой
+    const pp = app.paper.peek();
+    const spread = !!pp.spread;
+    const alt = !spread && pp.side === 'alternate';
+    const side = spread
+      ? i % 2 === 1 ? ' — ПРАВАЯ страница разворота' : ' — ЛЕВАЯ страница разворота'
+      : !alt ? '' : i % 2 === 1 ? ' — ЛЕВАЯ страница (переверните лист)' : ' — ПРАВАЯ страница';
     if (hasPen) {
       const before = pencilIn
         ? `Рисунки карандашом готовы. Верните ручку (кончик на той же высоте), положите страницу ${i + 1}${side} и нажмите «Продолжить».`
-        : alt && out.length
-          ? `Страница ${i} готова. Дальше страница ${i + 1}${side}. Положите тетрадь углом страницы в ноль и нажмите «Продолжить».`
-          : undefined;
+        : spread && out.length && i % 2 === 0
+          ? `Разворот готов. Переверните страницу тетради, положите новый разворот углом в ноль и нажмите «Продолжить».`
+          : alt && out.length
+            ? `Страница ${i} готова. Дальше страница ${i + 1}${side}. Положите тетрадь углом страницы в ноль и нажмите «Продолжить».`
+            : undefined;
       out.push({ plan: pen!, pageNo: i, before });
       pencilIn = false;
     }

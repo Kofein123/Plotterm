@@ -77,7 +77,17 @@ export function PaperTab() {
           <Field label="Слева"><NumInput value={bind(p, 'marginLeft').get} onChange={bind(p, 'marginLeft').set} min={0} max={100} unit="мм" /></Field>
           <Field label="Справа"><NumInput value={bind(p, 'marginRight').get} onChange={bind(p, 'marginRight').set} min={0} max={100} unit="мм" /></Field>
         </div>
-        <Field label="Страница тетради" hint="на левой странице поля зеркалятся">
+        <Toggle
+          value={() => !!p.value.spread}
+          onChange={(v: boolean) => {
+            const cur = p.peek();
+            // ширина листа — это весь разворот: включая разворот, удваиваем её, выключая — возвращаем
+            p.patch({ spread: v, width: v ? Math.round(cur.width * 2) : Math.max(50, Math.round(cur.width / 2)) });
+          }}
+          label="Тетрадь лежит разворотом (две страницы)"
+          hint="Плоттер напишет сначала левую страницу, потом правую, и попросит перевернуть лист только после обеих. Ширина листа удваивается — задайте ширину всего разворота"
+        />
+        <Field label="Страница тетради" hint="на левой странице поля зеркалятся; при развороте не используется">
           <Segmented value={bind(p, 'side').get} onChange={bind(p, 'side').set} options={[{ value: 'right', label: 'Правая' }, { value: 'left', label: 'Левая' }, { value: 'alternate', label: 'Чередовать' }]} />
         </Field>
         <div class="row wrap">
