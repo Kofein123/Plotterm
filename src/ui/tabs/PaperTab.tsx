@@ -1,7 +1,7 @@
 import { h } from '../dom.ts';
 import { app, PAPER_PRESETS } from '../../app/state.ts';
 import { Btn, Field, NumInput, Note, Section, Segmented, Toggle, bind } from '../components.tsx';
-import { syncPaperToFrame, traceMargins } from '../../app/actions.ts';
+import { flipPageSide, syncPaperToFrame, traceMargins } from '../../app/actions.ts';
 import type { PaperTemplate } from '../../core/types.ts';
 
 export function PaperTab() {
@@ -77,9 +77,34 @@ export function PaperTab() {
           <Field label="Слева"><NumInput value={bind(p, 'marginLeft').get} onChange={bind(p, 'marginLeft').set} min={0} max={100} unit="мм" /></Field>
           <Field label="Справа"><NumInput value={bind(p, 'marginRight').get} onChange={bind(p, 'marginRight').set} min={0} max={100} unit="мм" /></Field>
         </div>
-        <Field label="Страница тетради" hint="на левой странице поля зеркалятся">
-          <Segmented value={bind(p, 'side').get} onChange={bind(p, 'side').set} options={[{ value: 'right', label: 'Правая' }, { value: 'left', label: 'Левая' }, { value: 'alternate', label: 'Чередовать' }]} />
+        <Toggle
+          value={() => !!p.value.spread}
+          onChange={(v: boolean) => {
+            const cur = p.peek();
+            // ширина листа — это весь разворот: включая разворот, удваиваем её, выключая — возвращаем
+            p.patch({ spread: v, width: v ? Math.round(cur.width * 2) : Math.max(50, Math.round(cur.width / 2)) });
+          }}
+          label="Тетрадь лежит разворотом (две страницы)"
+          hint="Плоттер напишет сначала левую страницу, потом правую, и попросит перевернуть лист только после обеих. Ширина листа удваивается — задайте ширину всего разворота"
+        />
+        <Field label="Красная линия (широкое поле)" hint="правая страница тетради — линия справа, левая — слева; «Чередовать» переносит её сама через страницу">
+          <Segmented value={bind(p, 'side').get} onChange={bind(p, 'side').set} options={[{ value: 'right', label: 'Справа' }, { value: 'left', label: 'Слева' }, { value: 'alternate', label: 'Чередовать' }]} />
         </Field>
+        <div class="row wrap">
+          <Btn small kind="ghost" onClick={() => flipPageSide()} title="Перенести широкое поле с красной линией на другую сторону">⇆ Линию на другую сторону</Btn>
+          {() => {
+            const pp = p.value;
+            if (pp.spread) return <span class="muted small">Разворот: красная линия стоит у внешнего края каждой половины.</span>;
+            const pi = app.currentPage.value;
+            const m = app.layout.value.pages[pi]?.mirrored ?? (pp.side === 'left' || (pp.side === 'alternate' && (pp.leftFirst ? pi % 2 === 0 : pi % 2 === 1)));
+            return <span class="muted small">Сейчас на странице {pi + 1} красная линия {m ? 'слева' : 'справа'}.</span>;
+          }}
+        </div>
+        {() =>
+          p.value.side === 'alternate' && !p.value.spread ? (
+            <Toggle value={() => !!p.value.leftFirst} onChange={(v: boolean) => p.patch({ leftFirst: v })} label="Начать с левой страницы" hint="Если первая страница тетради — левая: линия пойдёт слева, справа, слева…" />
+          ) : null
+        }
         <div class="row wrap">
           <Btn small kind="ghost" onClick={() => traceMargins()} disabled={() => app.machine.conn.value !== 'connected' || app.job.active} title="Ручка поднята: каретка проедет по границе полей">
             Показать поля на листе

@@ -137,7 +137,20 @@ export function layoutText(inp: LayoutInput): LayoutResult {
   const baselines = pageBaselines(paper, capMm, descMm, inp.gridOrigin);
   const pages: PageLayout[] = [];
   const marginsFor = (pi: number) => {
-    const mirrored = paper.side === 'left' || (paper.side === 'alternate' && pi % 2 === 1);
+    // разворот: страницы идут не одна за другой по листам, а по половинам одного листа —
+    // чётная слева, нечётная справа, поля у правой половины зеркальные (красная линия снаружи)
+    if (paper.spread) {
+      const half = paper.width / 2;
+      // широкое поле (с красной линией) — у внешнего края разворота, как в тетради
+      const wide = Math.max(paper.marginLeft, paper.marginRight);
+      const narrow = Math.min(paper.marginLeft, paper.marginRight);
+      return pi % 2 === 1
+        ? { left: half + narrow, right: paper.width - wide, mirrored: paper.marginLeft > paper.marginRight }
+        : { left: wide, right: half - narrow, mirrored: paper.marginLeft < paper.marginRight };
+    }
+    // чередование: по умолчанию первая страница правая, но тетрадь могли начать и с левой
+    const altLeft = paper.leftFirst ? pi % 2 === 0 : pi % 2 === 1;
+    const mirrored = paper.side === 'left' || (paper.side === 'alternate' && altLeft);
     return mirrored
       ? { left: paper.marginRight, right: paper.width - paper.marginLeft, mirrored }
       : { left: paper.marginLeft, right: paper.width - paper.marginRight, mirrored };

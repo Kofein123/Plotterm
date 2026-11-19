@@ -217,3 +217,15 @@ test('тест люфта: при зазоре 0,5 мм сходится пар�
   assert.equal(best((k) => drawn[k * 4][0] - drawn[k * 4 + 1][0]), 2);
   assert.equal(best((k) => drawn[k * 4 + 2][1] - drawn[k * 4 + 3][1]), 2);
 });
+
+test('чередование страниц: красная линия переезжает, «начать с левой» меняет порядок', () => {
+  const long = Array.from({ length: 120 }, (_, i) => `строка номер ${i + 1}`).join('\n');
+  const p: PaperSettings = { ...paper, side: 'alternate' };
+  const a = layoutText({ text: long, font: BUILTIN_FONTS[0], typo, paper: p });
+  assert.ok(a.pages.length >= 2, 'нужно минимум две страницы');
+  assert.equal(a.pages[0].mirrored, false);
+  assert.equal(a.pages[1].mirrored, true);
+  const b = layoutText({ text: long, font: BUILTIN_FONTS[0], typo, paper: { ...p, leftFirst: true } });
+  assert.equal(b.pages[0].mirrored, true);
+  assert.equal(b.pages[1].mirrored, false);
+});
