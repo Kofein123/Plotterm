@@ -313,6 +313,7 @@ select { width: 100%; max-width: 100%; }
 .jog-z .jog-btn { width: 44px; height: 32px; }
 .jog-z-label { font-size: 12.5px; color: var(--muted); }
 .jog-pen, .jog-step { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.jog-pendown { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; padding: 6px 8px; border-radius: 8px; color: var(--warn); background: var(--warn-soft); border: 1px solid #e9c46a; }
 .jog-pen .btn { flex: 1; }
 .pos { display: flex; flex-direction: column; gap: 3px; padding: 7px 9px; border-radius: 8px; background: var(--panel-2); font: 12.5px var(--mono); }
 .pos-row { display: flex; align-items: baseline; gap: 6px; }

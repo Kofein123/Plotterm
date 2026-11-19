@@ -148,7 +148,9 @@ export function layoutText(inp: LayoutInput): LayoutResult {
         ? { left: half + narrow, right: paper.width - wide, mirrored: paper.marginLeft > paper.marginRight }
         : { left: wide, right: half - narrow, mirrored: paper.marginLeft < paper.marginRight };
     }
-    const mirrored = paper.side === 'left' || (paper.side === 'alternate' && pi % 2 === 1);
+    // чередование: по умолчанию первая страница правая, но тетрадь могли начать и с левой
+    const altLeft = paper.leftFirst ? pi % 2 === 0 : pi % 2 === 1;
+    const mirrored = paper.side === 'left' || (paper.side === 'alternate' && altLeft);
     return mirrored
       ? { left: paper.marginRight, right: paper.width - paper.marginLeft, mirrored }
       : { left: paper.marginLeft, right: paper.width - paper.marginRight, mirrored };

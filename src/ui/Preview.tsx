@@ -148,7 +148,8 @@ export function Preview() {
 
     // разлиновка
     const layoutPage = app.layout.peek().pages[app.currentPage.peek()];
-    const mirrored = layoutPage?.mirrored ?? (p.side === 'left');
+    const pageNo = app.currentPage.peek();
+    const mirrored = layoutPage?.mirrored ?? (p.side === 'left' || (p.side === 'alternate' && (p.leftFirst ? pageNo % 2 === 0 : pageNo % 2 === 1)));
     ctx.lineWidth = Math.max(0.12, px);
     ctx.strokeStyle = colors.grid;
     ctx.beginPath();

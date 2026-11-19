@@ -100,6 +100,14 @@ export function Jog(props: { compact?: boolean }) {
         }
       </div>
       {() =>
+        app.machine.conn.value === 'connected' && app.calib.value.penSet && app.isPenDown(app.machine.wpos.value[2]) ? (
+          <div class="jog-pendown">
+            <span>Ручка внизу — при переезде она прочертит лист.</span>
+            <button class="btn btn-small btn-primary" onClick={() => penUp()}>Поднять ручку</button>
+          </div>
+        ) : null
+      }
+      {() =>
         app.calib.value.cornerSet ? (
           <Toggle value={() => clampJog.value} onChange={(v) => (clampJog.value = v)} label="Не выезжать за лист" hint="После калибровки каретка не уйдёт за границы листа" />
         ) : null

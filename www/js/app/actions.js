@@ -295,27 +295,55 @@ export async function penDown() {
         jogError(e);
     }
 }
+/**
+ * Гарантированно поднять ручку перед переездом: ноль ручки известен — поднимаем в сохранённое
+ * «поднято», иначе от текущего места (абсолютный Z мог сбиться, и тогда «подъём» прочертит лист).
+ * Возвращает false, если поднять не удалось.
+ */
+export async function liftBeforeTravel() {
+    const c = calib.peek();
+    try {
+        if (c.penSet && !c.stale) {
+            await machine.send(`G21 G90 G0 Z${fmt(c.upZ)}`);
+        }
+        else {
+            const lift = Math.max(3, Math.abs(c.upZ || 0));
+            await machine.jog(0, 0, (c.upZ >= 0 ? 1 : -1) * lift, prefs.peek().zFeed);
+            toast(`Положение ручки неизвестно — подняли её на ${fmt(lift)} мм от текущего места.`, 'warn');
+        }
+        await machine.waitIdle(20000);
+        return true;
+    }
+    catch (e) {
+        jogError(e);
+        return false;
+    }
+}
 export async function goZero() {
     if (!needConn())
         return;
-    const c = calib.peek();
+    // сначала подъём и только потом переезд: иначе опущенная ручка прочертит линию через весь лист
+    if (!(await liftBeforeTravel()))
+        return;
     try {
-        if (c.penSet && !c.stale)
-            await machine.send(`G90 G0 Z${fmt(c.upZ)}`);
-        else {
-            // ноль ручки неизвестен (плату перезагружали или шаг 1 не пройден): «поднять до upZ» может
-            // оказаться вообще не подъёмом, и каретка прочертит линию через весь лист. Поднимаем от текущего места.
-            const lift = Math.max(3, Math.abs(c.upZ || 0));
-            if (!confirm(`Положение ручки неизвестно (ноль мог сбиться). Поднять ручку на ${fmt(lift)} мм от текущего места и ехать в ноль?\n\nЕсли ручка уже высоко — нажмите «Отмена» и поднимите её стрелками Z.`))
-                return;
-            await machine.jog(0, 0, (c.upZ >= 0 ? 1 : -1) * lift, prefs.peek().zFeed);
-            await machine.waitIdle(15000);
-        }
         await machine.send('G90 G0 X0 Y0');
     }
     catch (e) {
         jogError(e);
     }
+}
+/** Перенести широкое поле с красной линией на другую сторону страницы. */
+export function flipPageSide() {
+    const p = app.paper.peek();
+    if (p.spread)
+        return toast('На развороте красная линия стоит у внешних краёв обеих половин.', 'info');
+    if (p.side === 'alternate') {
+        app.paper.patch({ leftFirst: !p.leftFirst });
+        return toast(`Чередование: первая страница теперь ${!p.leftFirst ? 'левая' : 'правая'}.`, 'ok');
+    }
+    const next = p.side === 'left' ? 'right' : 'left';
+    app.paper.patch({ side: next });
+    toast(`Красная линия ${next === 'left' ? 'слева' : 'справа'}.`, 'ok');
 }
 export async function unlock() {
     try {
@@ -682,6 +710,8 @@ export async function printFromStroke(stroke) {
 job.hooks.onSheet = (next) => {
     if (prefs.peek().sound)
         beep('sheet');
+    if (machine.connected)
+        void liftBeforeTravel();
     systemNotify('Plotterm: смените лист', `Дальше страница ${next.pageNo + 1}`);
     app.currentPage.value = next.pageNo;
     simInk.segs = [];
@@ -690,6 +720,9 @@ job.hooks.onSheet = (next) => {
 job.hooks.onDone = (sec) => {
     if (prefs.peek().sound)
         beep('done');
+    // печать кончилась — ручка вверх, чтобы следующий переезд или «К нулю» не прочертил лист
+    if (machine.connected)
+        void liftBeforeTravel();
     systemNotify('Plotterm: готово', `Напечатано за ${fmtTime(sec)}`);
     const meters = job.pages.reduce((a, p) => a + p.plan.drawLength, 0) / 1000;
     if (!job.dryRun.peek()) {
