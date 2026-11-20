@@ -5,6 +5,18 @@
 export interface Stroke {
   pts: number[];
   line: number;
+  /** чем рисовать: по умолчанию ручкой; «pencil» — после текста страницы, с паузой на смену */
+  tool?: 'pencil';
+}
+
+/** Рисунок на странице: где он лёг и из какой строки разметки взят — для правки в предпросмотре. */
+export interface ImageBox {
+  id: string;
+  u: number;
+  v: number;
+  w: number;
+  h: number;
+  tool: 'pen' | 'pencil' | 'space';
 }
 
 export interface PageLayout {
@@ -17,6 +29,27 @@ export interface PageLayout {
   mirrored: boolean;
   /** базовые линии строк (v), для предпросмотра */
   baselines: number[];
+  /** рисунки страницы с их местом на листе */
+  images: ImageBox[];
+}
+
+/** Экземпляр буквы на странице: штрихи уже в бумажных координатах (мм). */
+export interface GlyphInstance {
+  ch: string;
+  page: number;
+  strokes: number[][];
+}
+
+/** Связный штрих слова: joints — номера точек, где буква переходит в соединение и обратно. */
+export interface CursiveRun {
+  page: number;
+  pts: number[];
+  joints: number[];
+}
+
+export interface LayoutTrace {
+  glyphs: GlyphInstance[];
+  runs: CursiveRun[];
 }
 
 export interface LayoutResult {
@@ -24,6 +57,8 @@ export interface LayoutResult {
   missingChars: string[];
   /** символов в тексте (без пробелов) */
   chars: number;
+  /** трасса вёрстки, если просили `trace: true` */
+  trace?: LayoutTrace;
 }
 
 export type PaperTemplate = 'a4' | 'grid' | 'ruled' | 'custom';
@@ -44,8 +79,14 @@ export interface PaperSettings {
   gridLineCells: number;
   /** линейка: шаг линий */
   rulePitch: number;
-  /** правая / левая страница / чередовать (поля зеркалятся на левой) */
-  side: 'right' | 'left' | 'alternate';
+  /** правая / левая страница / чередовать (поля зеркалятся на левой) / без красной линии */
+  side: 'right' | 'left' | 'alternate' | 'none';
+  /** тетрадь лежит разворотом: на листе две страницы, левая и правая половина */
+  spread?: boolean;
+  /** при «Чередовать»: первая страница — левая (красная линия сразу слева) */
+  leftFirst?: boolean;
+  /** подгонять текст (буквы, поля, клетку) под новый размер листа после калибровки */
+  autoFit?: boolean;
   /** повернуть страницу на 180° (оборот листа) */
   rotate180: boolean;
   /** начать с N-й строки первой страницы (дописать на начатой странице) */
@@ -66,6 +107,8 @@ export interface TypographySettings {
   hyphenate: boolean;
   /** красная строка, мм */
   indent: number;
+  /** пустая строка между абзацами (выключить — текст плотнее, уходит меньше листов) */
+  paraGap?: boolean;
   /** живость почерка 0–10 */
   liveliness: number;
   seed: number;
@@ -81,6 +124,8 @@ export interface Calibration {
   cornerSet: boolean;
   /** противоположный угол листа в рабочих координатах X, Y */
   corner: [number, number];
+  /** оси станка повёрнуты к листу на 90°: X станка идёт вдоль высоты листа, Y — вдоль ширины */
+  swap?: boolean;
   /** точка на верхнем крае листа для компенсации перекоса */
   skewPoint: [number, number] | null;
   /** узел сетки / линия линейки в бумажных координатах */
@@ -89,6 +134,8 @@ export interface Calibration {
   lastMPos: [number, number, number] | null;
   /** калибровка, возможно, устарела (плата перезагружалась) */
   stale: boolean;
+  /** люфт механики, мм: [поперёк листа (вдоль строки), вдоль высоты листа] — из теста люфта */
+  backlash?: [number, number];
 }
 
 export interface PenSettings {
@@ -104,6 +151,8 @@ export interface PenSettings {
   hopLift: number;
   /** до какой длины переезд считается коротким, мм */
   hopDistance: number;
+  /** версия настроек низкого подъёма (2 — по умолчанию 2 мм) */
+  hopV?: number;
 }
 
 export interface SpeedSettings {

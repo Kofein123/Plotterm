@@ -1,11 +1,13 @@
 // Действия: подключение, калибровка, ручное управление, печать, тесты.
-import { app } from "./state.js";
+import { app, gcodePlan } from "./state.js";
 import { signal, effect, createRoot } from "../ui/reactive.js";
 import { WebSerialTransport, serialApi, SPP_UUID } from "../grbl/webserial.js";
 import { SimulatorTransport } from "../grbl/simulator.js";
 import { paperToWork, workToPaper, penZ } from "../core/calibration.js";
 import { buildPlan, fmt } from "../core/plan.js";
 import { layoutText } from "../core/layout.js";
+import { backlashTestGcode } from "../core/backlash.js";
+import { BUILTIN_FONTS } from "../fonts/fonts.js";
 import { toast, beep, systemNotify, keepAwake, askNotifications, downloadText, stamp, fmtTime } from "./notify.js";
 import { GrblError } from "../grbl/machine.js";
 const { machine, job, calib, prefs } = app;
@@ -29,7 +31,7 @@ machine.onDisconnect = (reason) => {
 machine.onReset = (unexpected) => {
     if (unexpected && calib.peek().zeroSet) {
         calib.patch({ stale: true });
-        toast('Плата перезагрузилась: ноль мог сбиться. Повторите шаги 2–3 калибровки.', 'warn', 12000);
+        toast('Плата перезагрузилась: ноль листа и ручки мог сбиться. Повторите калибровку (шаги 1–3), иначе ручка может не подняться.', 'warn', 12000);
     }
 };
 createRoot(() => {
@@ -220,8 +222,9 @@ export async function jogStep(du, dv) {
             await machine.jogTo(x, y, null, feed);
         }
         else {
-            // до калибровки: ←→ = X, ↑↓ = Y станка
-            await machine.jog(du, -dv, 0, feed);
+            // до калибровки: по осям станка, но в тех же направлениях, что и метка на превью
+            const [x, y] = paperToWork(app.frame.peek(), du, dv);
+            await machine.jog(x, y, 0, feed);
         }
     }
     catch (e) {
@@ -243,7 +246,8 @@ export async function jogContinuousStart(du, dv) {
             await machine.jogTo(x, y, null, feed);
         }
         else {
-            await machine.jog(du * 300, -dv * 300, 0, feed);
+            const [x, y] = paperToWork(app.frame.peek(), du * 300, dv * 300);
+            await machine.jog(x, y, 0, feed);
         }
     }
     catch (e) {
@@ -291,16 +295,57 @@ export async function penDown() {
         jogError(e);
     }
 }
+/**
+ * Гарантированно поднять ручку перед переездом: ноль ручки известен — поднимаем в сохранённое
+ * «поднято», иначе от текущего места (абсолютный Z мог сбиться, и тогда «подъём» прочертит лист).
+ * Возвращает false, если поднять не удалось.
+ */
+export async function liftBeforeTravel() {
+    const c = calib.peek();
+    try {
+        if (c.penSet && !c.stale) {
+            await machine.send(`G21 G90 G0 Z${fmt(c.upZ)}`);
+        }
+        else {
+            const lift = Math.max(3, Math.abs(c.upZ || 0));
+            await machine.jog(0, 0, (c.upZ >= 0 ? 1 : -1) * lift, prefs.peek().zFeed);
+            toast(`Положение ручки неизвестно — подняли её на ${fmt(lift)} мм от текущего места.`, 'warn');
+        }
+        await machine.waitIdle(20000);
+        return true;
+    }
+    catch (e) {
+        jogError(e);
+        return false;
+    }
+}
 export async function goZero() {
     if (!needConn())
         return;
+    // сначала подъём и только потом переезд: иначе опущенная ручка прочертит линию через весь лист
+    if (!(await liftBeforeTravel()))
+        return;
     try {
-        await machine.send(`G90 G0 Z${fmt(calib.peek().upZ)}`);
-        await machine.send('G0 X0 Y0');
+        await machine.send('G90 G0 X0 Y0');
     }
     catch (e) {
         jogError(e);
     }
+}
+/** Перенести широкое поле с красной линией на другую сторону страницы. */
+export function flipPageSide() {
+    const p = app.paper.peek();
+    if (p.spread)
+        return toast('На развороте красная линия стоит у внешних краёв обеих половин.', 'info');
+    if (p.side === 'alternate') {
+        app.paper.patch({ leftFirst: !p.leftFirst });
+        return toast(`Чередование: первая страница теперь ${!p.leftFirst ? 'левая' : 'правая'}.`, 'ok');
+    }
+    if (p.side === 'none')
+        return toast('Сейчас выбрано «Нет»: красной линии на листе нет.', 'info');
+    const next = p.side === 'left' ? 'right' : 'left';
+    app.paper.patch({ side: next });
+    toast(`Красная линия ${next === 'left' ? 'слева' : 'справа'}.`, 'ok');
 }
 export async function unlock() {
     try {
@@ -349,6 +394,62 @@ export async function calibZero() {
         toast('Ошибка: ' + e.message, 'err');
     }
 }
+/** Размер бумаги в настройках ≠ откалиброванному листу больше чем на 1 мм. */
+export function paperMismatch() {
+    const f = app.frame.peek();
+    const p = app.paper.peek();
+    return f.ready && (Math.abs(p.width - f.width) > 1 || Math.abs(p.height - f.height) > 1);
+}
+/** Во сколько раз подогнался текст при последнем `syncPaperToFrame` (0 — не подгонялся). */
+let lastFit = 0;
+export const fitFactor = () => lastFit;
+/**
+ * Взять размер бумаги с откалиброванного листа. true — если что-то поменялось.
+ * Если включена подгонка, вместе с листом пропорционально меняются буквы, поля и разлиновка,
+ * чтобы на новом листе помещалось столько же, сколько на прежнем.
+ */
+export function syncPaperToFrame() {
+    if (!paperMismatch())
+        return false;
+    const f = app.frame.peek();
+    const p = app.paper.peek();
+    const r = (v) => Math.round(v * 2) / 2;
+    const k = Math.min(f.width / p.width, f.height / p.height);
+    const fit = p.autoFit !== false && Number.isFinite(k) && k > 0.2 && k < 5 && Math.abs(k - 1) > 0.02;
+    const r2 = (v) => Math.round(v * k * 10) / 10;
+    // клетку и линейку не трогаем: это разлиновка самой тетради, она не зависит от того, как лист откалиброван
+    const ruled = p.template === 'grid' || p.template === 'ruled';
+    app.paper.patch(fit
+        ? {
+            width: r(f.width), height: r(f.height),
+            marginTop: r2(p.marginTop), marginBottom: r2(p.marginBottom), marginLeft: r2(p.marginLeft), marginRight: r2(p.marginRight),
+            ...(ruled ? {} : { blankLineStep: Math.max(3, r2(p.blankLineStep)) }),
+        }
+        : { width: r(f.width), height: r(f.height) });
+    if (fit) {
+        const t = app.typo.peek();
+        // в тетради высоту буквы задаёт клетка, а не размер листа — там меняем только красную строку
+        app.typo.patch({
+            ...(ruled ? {} : { xHeight: Math.min(7, Math.max(1.5, Math.round(t.xHeight * k * 10) / 10)) }),
+            indent: Math.round(t.indent * k),
+        });
+    }
+    lastFit = fit ? k : 0;
+    return true;
+}
+/** Обвести поля (область текста) поднятой ручкой — увидеть на настоящем листе, где будет текст. */
+export function traceMargins() {
+    const p = app.paper.peek();
+    if (!app.frame.peek().ready)
+        return toast('Сначала шаги 2–3 калибровки.', 'warn');
+    const pg = app.layout.peek().pages[app.currentPage.peek()];
+    const mirrored = pg?.mirrored ?? p.side === 'left';
+    let l = mirrored ? p.marginRight : p.marginLeft, r = p.width - (mirrored ? p.marginLeft : p.marginRight);
+    let t = p.marginTop, b = p.height - p.marginBottom;
+    if (p.rotate180)
+        [l, r, t, b] = [p.width - r, p.width - l, p.height - b, p.height - t];
+    return traceRect(l, t, r, b);
+}
 export function calibCorner() {
     const [x, y] = machine.wpos.peek();
     if (!calib.peek().zeroSet) {
@@ -361,7 +462,18 @@ export function calibCorner() {
     }
     calib.patch({ corner: [Math.round(x * 100) / 100, Math.round(y * 100) / 100], cornerSet: true, stale: false });
     const f = app.frame.peek();
-    toast(`Лист: ${f.width.toFixed(1)} × ${f.height.toFixed(1)} мм. Каретка больше не выйдет за эти границы.`, 'ok', 8000);
+    // поля в программе считаются от краёв листа из настроек «Бумага»; если он другого размера, чем настоящий,
+    // на предпросмотре всё в полях, а на бумаге текст уезжает за край — поэтому размер берём с калибровки
+    if (f.width < 100 || f.height < 100) {
+        toast(`Область ${f.width.toFixed(0)}×${f.height.toFixed(0)} мм — меньше листа. Край (шаг 3) ставится в ПРАВЫЙ НИЖНИЙ угол самого листа, а ноль (шаг 2) — точно в левый верхний: поля отсчитываются от этих точек.`, 'warn', 14000);
+    }
+    else if (syncPaperToFrame()) {
+        const k = fitFactor();
+        toast(`Лист: ${f.width.toFixed(1)} × ${f.height.toFixed(1)} мм — размер бумаги подстроен под настоящий лист.` +
+            (k ? ` Текст подогнан под него: буквы, поля и разлиновка ×${k.toFixed(2)} (выключается на вкладке «Бумага»).` : ''), 'ok', 10000);
+    }
+    else
+        toast(`Лист: ${f.width.toFixed(1)} × ${f.height.toFixed(1)} мм. Каретка больше не выйдет за эти границы.`, 'ok', 8000);
 }
 export function calibSkew() {
     const [x, y] = machine.wpos.peek();
@@ -381,6 +493,17 @@ export function calibGridOrigin() {
     const [u, v] = workToPaper(app.frame.peek(), x, y);
     calib.patch({ gridOrigin: [Math.round(u * 100) / 100, Math.round(v * 100) / 100] });
     toast('Запомнена линия сетки: строки встанут на линии клеток.', 'ok');
+}
+/** Стрелка едет не туда — перевернуть ось (до шага 3; шаг 3 потом сам узнаёт направление). */
+export function calibFlipAxis(axis) {
+    const { corner: c, swap } = calib.peek();
+    const i = swap ? 1 - axis : axis;
+    calib.patch({ corner: i === 0 ? [-c[0], c[1]] : [c[0], -c[1]] });
+}
+/** Тетрадь стоит поперёк осей станка: ←→ двигают ось Y, ↑↓ — ось X. Лист после этого надо задать заново. */
+export function calibSwapAxes() {
+    const { corner: c, swap } = calib.peek();
+    calib.patch({ swap: !swap, corner: [c[1], c[0]], cornerSet: false, skewPoint: null });
 }
 export function calibResetAll() {
     if (!confirm('Сбросить всю калибровку?'))
@@ -471,6 +594,47 @@ export async function writeSetting(key, value) {
         toast('Не записалось: ' + (e?.message ?? e), 'err');
     }
 }
+/**
+ * «Настроить на быстро»: разом ставит скорость письма, низкий подъём и упрощение линий,
+ * а если плата на связи — поднимает её ускорение и порог поворотов (с копией настроек).
+ */
+export async function speedUpAll() {
+    app.speed.patch({ profile: 'draft', simplify: 0.1, joinTolerance: 0.2, travelFeed: 0 });
+    app.pen.patch({ hopLift: 2, hopDistance: 10, zDownRapid: true, dwellMs: 0 });
+    const done = ['скорость письма 6000 мм/мин', 'низкий подъём 2 мм', 'упрощение линий 0,1 мм', 'опускание на полной скорости'];
+    if (!machine.connected) {
+        toast('Готово: ' + done.join(', ') + '. Плата не на связи — её настройки ($11, $120, $121) запишутся, когда подключитесь и нажмёте ещё раз.', 'ok', 12000);
+        return;
+    }
+    if (job.active)
+        return toast('Во время печати настройки платы менять нельзя. Настройки программы уже применены.', 'warn');
+    const want = [[11, '0.050'], [120, '600'], [121, '600']];
+    const cur = machine.settings.peek();
+    const todo = want.filter(([k, v]) => {
+        const now = parseFloat(cur.get(k) ?? '');
+        return !Number.isFinite(now) || now < parseFloat(v);
+    });
+    if (!todo.length) {
+        toast('Готово: ' + done.join(', ') + '. В плате всё уже выставлено.', 'ok', 10000);
+        return;
+    }
+    const list = todo.map(([k, v]) => `$${k}=${v}`).join(', ');
+    const ok = confirm(`Записать в плату ${list}?\n\nЭто ускорение осей и порог поворотов. Перед записью скачается копия всех текущих настроек; если мотор начнёт пропускать шаги — верните прежние значения из копии.`);
+    if (!ok) {
+        toast('Настройки программы применены, плату не трогал.', 'ok');
+        return;
+    }
+    try {
+        await backupSettings();
+        for (const [k, v] of todo)
+            await machine.send(`$${k}=${v}`);
+        await machine.refreshSettings();
+        toast('Готово: ' + done.join(', ') + `, в плате ${list}.`, 'ok', 12000);
+    }
+    catch (e) {
+        toast('Настройки программы применены, но плата не приняла: ' + (e?.message ?? e), 'err');
+    }
+}
 export function printBlockers() {
     const out = [];
     if (machine.conn.value !== 'connected')
@@ -489,18 +653,54 @@ export function printBlockers() {
         out.push('плата в ALARM — разблокируйте');
     return out;
 }
-export function buildJobPages(range, dry) {
+export function buildJobPages(range, dry, skipOutside = false) {
     const n = app.pageCount.peek();
     let idx = [];
     if (range.kind === 'all')
         idx = [...Array(n).keys()];
-    else if (range.kind === 'current')
+    else if (range.kind === 'current' || range.kind === 'lines' || range.kind === 'zone')
         idx = [Math.min(app.currentPage.peek(), n - 1)];
     else
         idx = [...Array(n).keys()].filter((i) => i >= range.page);
-    return idx
-        .map((i) => ({ plan: app.planFor(i, { dryRun: dry }), pageNo: i }))
-        .filter((p) => !!p.plan && p.plan.gcode.length > 0);
+    // на каждой странице сначала текст ручкой, потом рисунки карандашом (с паузой на смену и обратно)
+    const out = [];
+    let pencilIn = false;
+    for (const i of idx) {
+        // отдельные строки — только текст ручкой, без рисунков
+        const lines = range.kind === 'lines' ? [range.from, range.to] : undefined;
+        const zone = range.kind === 'zone' ? range.zone : undefined;
+        const pen = app.planFor(i, { dryRun: dry, tool: 'pen', lines, zone, skipOutside });
+        const pencil = lines ? null : app.planFor(i, { dryRun: dry, tool: 'pencil', zone, skipOutside });
+        const hasPen = !!pen && pen.strokes.length > 0;
+        const hasPencil = !!pencil && pencil.strokes.length > 0;
+        // в тетради страницы идут по очереди: правая, потом её оборот — левая (поля зеркалятся);
+        // на развороте обе страницы лежат разом, и лист переворачивается только после правой
+        const pp = app.paper.peek();
+        const spread = !!pp.spread;
+        const alt = !spread && pp.side === 'alternate';
+        const side = spread
+            ? i % 2 === 1 ? ' — ПРАВАЯ страница разворота' : ' — ЛЕВАЯ страница разворота'
+            : !alt ? '' : i % 2 === 1 ? ' — ЛЕВАЯ страница (переверните лист)' : ' — ПРАВАЯ страница';
+        if (hasPen) {
+            const before = pencilIn
+                ? `Рисунки карандашом готовы. Верните ручку (кончик на той же высоте), положите страницу ${i + 1}${side} и нажмите «Продолжить».`
+                : spread && out.length && i % 2 === 0
+                    ? `Разворот готов. Переверните страницу тетради, положите новый разворот углом в ноль и нажмите «Продолжить».`
+                    : alt && out.length
+                        ? `Страница ${i} готова. Дальше страница ${i + 1}${side}. Положите тетрадь углом страницы в ноль и нажмите «Продолжить».`
+                        : undefined;
+            out.push({ plan: pen, pageNo: i, before });
+            pencilIn = false;
+        }
+        if (hasPencil) {
+            const before = pencilIn
+                ? `Положите страницу ${i + 1}${side} — карандаш оставьте и нажмите «Продолжить».`
+                : `Текст страницы ${i + 1} готов. Вставьте КАРАНДАШ вместо ручки (кончик на той же высоте над бумагой) и нажмите «Продолжить» — нарисую рисунки.`;
+            out.push({ plan: pencil, pageNo: i, before });
+            pencilIn = true;
+        }
+    }
+    return out;
 }
 export async function startPrint(range, fromStroke = 0) {
     const blockers = printBlockers();
@@ -509,13 +709,22 @@ export async function startPrint(range, fromStroke = 0) {
     if (job.active)
         return;
     const dry = app.dryRun.peek();
-    const pages = buildJobPages(range, dry);
+    let pages = buildJobPages(range, dry);
     if (!pages.length)
         return toast('Нет страниц для печати.', 'warn');
-    const bad = pages.find((p) => p.plan.outOfBounds.length);
-    if (bad) {
-        app.currentPage.value = bad.pageNo;
-        return toast(`Страница ${bad.pageNo + 1}: часть текста выходит за лист (подсвечено красным). Уменьшите поля/шрифт или проверьте калибровку.`, 'err');
+    const bad = pages.filter((p) => p.plan.outOfBounds.length);
+    if (bad.length) {
+        // не запрещаем: показываем, где вылезло, и предлагаем напечатать то, что помещается
+        app.currentPage.value = bad[0].pageNo;
+        if (app.source.peek().kind === 'gcode')
+            return toast('Готовый G-код выходит за край листа — проверьте калибровку или файл.', 'err');
+        const n = bad.reduce((a, p) => a + p.plan.outOfBounds.length, 0);
+        const where = bad.map((p) => p.pageNo + 1).join(', ');
+        if (!confirm(`${n} штрих(ов) на стр. ${where} выходят за край листа (подсвечены красным).\n\nНапечатать всё остальное, а то, что за краем, пропустить?\n«Отмена» — вернуться и поправить поля, шрифт или выбрать зону.`))
+            return;
+        pages = buildJobPages(range, dry, true).filter((p) => p.plan.strokes.length);
+        if (!pages.length)
+            return toast('Внутри листа нечего печатать.', 'warn');
     }
     if (machine.state.peek() !== 'Idle') {
         try {
@@ -575,6 +784,8 @@ export async function printFromStroke(stroke) {
 job.hooks.onSheet = (next) => {
     if (prefs.peek().sound)
         beep('sheet');
+    if (machine.connected)
+        void liftBeforeTravel();
     systemNotify('Plotterm: смените лист', `Дальше страница ${next.pageNo + 1}`);
     app.currentPage.value = next.pageNo;
     simInk.segs = [];
@@ -583,6 +794,9 @@ job.hooks.onSheet = (next) => {
 job.hooks.onDone = (sec) => {
     if (prefs.peek().sound)
         beep('done');
+    // печать кончилась — ручка вверх, чтобы следующий переезд или «К нулю» не прочертил лист
+    if (machine.connected)
+        void liftBeforeTravel();
     systemNotify('Plotterm: готово', `Напечатано за ${fmtTime(sec)}`);
     const meters = job.pages.reduce((a, p) => a + p.plan.drawLength, 0) / 1000;
     if (!job.dryRun.peek()) {
@@ -674,6 +888,16 @@ export function patternPlanFor(kind) {
                 return patternPlan([...textStrokes(String(fd), L, v + 1.5, 3), { pts: wave, line: 1 }], 'скорость ' + fd, fd);
             });
             return mergePlans(plans, 'полоса скоростей');
+        }
+        case 'backlash': {
+            // без поправки на люфт и медленно: меряем саму механику
+            const g = BUILTIN_FONTS.find((x) => x.id === 'gost-b');
+            const digit = (ch) => {
+                const gl = g.glyphs.get(ch)?.[0];
+                return gl ? gl.s.map((st) => st.map((c, i) => (i % 2 === 0 ? c / g.capHeight : (g.capHeight - c) / g.capHeight))) : [];
+            };
+            const fr = f.ready ? f : { ...f, width: W, height: H };
+            return gcodePlan(backlashTestGcode(fr, calib.peek(), app.pen.peek(), 1500, digit));
         }
         case 'paragraph': {
             const r = layoutText({ text: 'Съешь же ещё этих мягких французских булок, да выпей чаю. Пробный абзац для проверки нажима, скорости и почерка: 0123456789.', font: app.font.peek(), typo: app.typo.peek(), paper: { ...p, startLine: 1 } });

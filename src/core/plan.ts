@@ -33,6 +33,8 @@ export interface PlanInput {
   title: string;
   /** коэффициент уточнения оценки времени по прошлым печатям */
   timeFactor?: number;
+  /** штрихи за краем листа не печатать (вместо запрета печати) */
+  skipOutside?: boolean;
 }
 
 export interface Plan {
@@ -45,6 +47,8 @@ export interface Plan {
   /** строка G-кода → штрих (-1 для служебных строк) */
   lineStroke: Int32Array;
   outOfBounds: number[];
+  /** сколько штрихов за краем выброшено (skipOutside) */
+  skipped?: number;
   drawLength: number;
   travelLength: number;
   penLifts: number;
@@ -126,7 +130,7 @@ export function buildPlan(inp: PlanInput): Plan {
 
   // 2. порядок и склейка
   const ordered = orderStrokes(prepared, inp.reorder);
-  const joined: { pts: number[]; line: number }[] = [];
+  let joined: { pts: number[]; line: number }[] = [];
   for (const s of ordered) {
     const last = joined[joined.length - 1];
     if (last && speed.joinTolerance > 0) {
@@ -140,7 +144,7 @@ export function buildPlan(inp: PlanInput): Plan {
   }
 
   // 3. проверка границ листа
-  const outOfBounds: number[] = [];
+  let outOfBounds: number[] = [];
   const tol = 0.3;
   joined.forEach((s, i) => {
     for (let j = 0; j < s.pts.length; j += 2) {
@@ -151,6 +155,14 @@ export function buildPlan(inp: PlanInput): Plan {
       }
     }
   });
+
+  let skipped = 0;
+  if (inp.skipOutside && outOfBounds.length) {
+    const out = new Set(outOfBounds);
+    joined = joined.filter((_, i) => !out.has(i));
+    skipped = out.size;
+    outOfBounds = [];
+  }
 
   // 4. G-код
   const z = penZ(inp.calib, pen.pressure);
@@ -166,6 +178,34 @@ export function buildPlan(inp: PlanInput): Plan {
   emit(`; Plotterm: ${inp.title}${inp.dryRun ? ' (сухой прогон)' : ''}`, -1);
   emit('G21 G90', -1);
   emit(`G0 Z${fmt(z.up)}`, -1);
+  // люфт: при смене направления по оси мотор сначала «выбирает» зазор, а каретка стоит.
+  // Пока ось едет в минус, отправляем координату на люфт меньше; при развороте — короткий
+  // доворот только мотором (каретка не сдвигается, на бумаге следа нет)
+  const [bu, bv] = inp.calib.backlash ?? [0, 0];
+  const bl = frame.swap ? [Math.abs(bv), Math.abs(bu)] : [Math.abs(bu), Math.abs(bv)];
+  const useBl = bl[0] > 0.005 || bl[1] > 0.005;
+  const last = [NaN, NaN], dirs = [1, 1];
+  const compensate = (x: number, y: number, si: number): [number, number] => {
+    if (!useBl) return [x, y];
+    const want = [x, y];
+    let jump = false;
+    for (let a = 0; a < 2; a++) {
+      const d = Number.isNaN(last[a]) ? 0 : want[a] - last[a];
+      if (Math.abs(d) > 0.001) {
+        const nd = d > 0 ? 1 : -1;
+        if (nd !== dirs[a] && bl[a] > 0.005) jump = true;
+        dirs[a] = nd;
+      }
+    }
+    const out: [number, number] = [x - (dirs[0] < 0 ? bl[0] : 0), y - (dirs[1] < 0 ? bl[1] : 0)];
+    if (jump && !Number.isNaN(last[0])) {
+      const jx = last[0] - (dirs[0] < 0 ? bl[0] : 0), jy = last[1] - (dirs[1] < 0 ? bl[1] : 0);
+      emit(`G1 X${fmt(jx)} Y${fmt(jy)} F${Math.round(feed)}`, si);
+    }
+    last[0] = x;
+    last[1] = y;
+    return out;
+  };
   let drawLength = 0;
   let travelLength = 0;
   let px = 0, py = 0;
@@ -194,7 +234,7 @@ export function buildPlan(inp: PlanInput): Plan {
   joined.forEach((s, si) => {
     strokeTime.push(t);
     strokeStart.push(gcode.length);
-    const [x0, y0] = paperToWork(frame, s.pts[0], s.pts[1]);
+    const [x0, y0] = compensate(...paperToWork(frame, s.pts[0], s.pts[1]), si);
     const travel = first ? 0 : Math.hypot(s.pts[0] - px, s.pts[1] - py);
     travelLength += travel;
     const tt = travel / vTravel + (travel > 0 ? 2 * Math.sqrt(travel / a) : 0);
@@ -216,12 +256,13 @@ export function buildPlan(inp: PlanInput): Plan {
     let prevAngle: number | null = null;
     let tStroke = 0;
     for (let j = 2; j < s.pts.length; j += 2) {
-      const [x, y] = paperToWork(frame, s.pts[j], s.pts[j + 1]);
+      const [x, y] = compensate(...paperToWork(frame, s.pts[j], s.pts[j + 1]), si);
       const fx = fmt(x), fy = fmt(y);
       if (fx === lx && fy === ly) continue;
       let cmd = firstMove ? 'G1 ' : '';
-      if (fx !== lx) cmd += 'X' + fx;
-      if (fy !== ly) cmd += 'Y' + fy;
+      // с поправкой на люфт доворот мог сдвинуть другую ось — пишем обе
+      if (fx !== lx || useBl) cmd += 'X' + fx;
+      if (fy !== ly || useBl) cmd += 'Y' + fy;
       if (firstMove) cmd += ` F${Math.round(feed)}`;
       emit(cmd, si);
       firstMove = false;
@@ -271,6 +312,7 @@ export function buildPlan(inp: PlanInput): Plan {
     strokeStart,
     lineStroke: Int32Array.from(lineStrokeArr),
     outOfBounds,
+    skipped,
     drawLength,
     travelLength,
     penLifts: joined.length,

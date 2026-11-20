@@ -12,6 +12,8 @@ export interface JobPage {
   plan: Plan;
   /** номер страницы вёрстки (для подписи) */
   pageNo: number;
+  /** что сказать перед этой частью (смена ручки на карандаш и обратно); иначе — «положите следующий лист» */
+  before?: string;
 }
 
 export interface JobHooks {
@@ -164,6 +166,9 @@ export class JobRunner {
       return;
     }
     if (this.status.peek() !== 'running' && this.status.peek() !== 'pausing') return;
+    // страница кончилась — ручка вверх (на случай, если хвост плана не доехал)
+    this.machine.enqueue('G21 G90', { quiet: true });
+    this.machine.enqueue(`G0 Z${this.hooks.upZ().toFixed(2)}`, { quiet: true });
     const p = this.pageIdx.peek();
     const plan = this.pages[p].plan;
     const actual = (Date.now() - this.pageStartedAt) / 1000;
@@ -171,7 +176,7 @@ export class JobRunner {
     this.currentStroke.value = plan.strokes.length;
     if (p + 1 < this.pages.length) {
       this.status.value = 'sheet';
-      this.message.value = `Страница ${this.pages[p].pageNo + 1} готова. Положите следующий лист и нажмите «Продолжить».`;
+      this.message.value = this.pages[p + 1].before ?? `Страница ${this.pages[p].pageNo + 1} готова. Положите следующий лист и нажмите «Продолжить».`;
       this.hooks.onSheet?.(this.pages[p + 1]);
     } else {
       this.status.value = 'done';
@@ -179,7 +184,7 @@ export class JobRunner {
       this.eta.value = 0;
       this.stopTicker();
       const sec = (Date.now() - this.startedAt) / 1000;
-      this.message.value = `${this.dryRun.peek() ? 'Сухой прогон завершён' : 'Напечатано'}: ${this.pages.length} стр. за ${Math.floor(sec / 60)} мин ${Math.round(sec % 60)} с.`;
+      this.message.value = `${this.dryRun.peek() ? 'Сухой прогон завершён' : 'Напечатано'}: ${this.pages.length} стр. за ${Math.floor(sec / 60)} мин ${Math.round(sec % 60)} с. Ручка поднята.`;
       this.hooks.onDone?.((Date.now() - this.startedAt) / 1000);
     }
   }

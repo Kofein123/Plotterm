@@ -13,8 +13,9 @@ export function FontTab() {
           <Select value={fontId.get} onChange={fontId.set} options={() => app.fonts.value.map((f) => ({ value: f.id, label: f.name + (f.builtin ? '' : ' — мой почерк') }))} />
         </Field>
         <div class="muted small">
-          Плоттер рисует линией, поэтому нужны однолинейные шрифты. Встроены ГОСТ А и Б (кириллица, латиница, казахские буквы).
-          Свой почерк — на вкладке «Мой почерк».
+          Плоттер рисует линией, поэтому нужны однолинейные шрифты. Встроены ГОСТ А и Б, пропись и рукописный Caveat
+          (кириллица, латиница, казахские буквы). Свой почерк — на вкладке «Мой почерк»: распечатать лист-шаблон,
+          заполнить своей ручкой и сфотографировать.
         </div>
         <Btn small kind="primary" onClick={() => importFont()} disabled={() => !!importBusy.value}>
           <Icon name="upload" size={14} /> {() => importBusy.value ?? 'Загрузить свой шрифт (.ttf .otf .woff .svg)'}
@@ -40,6 +41,13 @@ export function FontTab() {
           <NumInput value={bind(t, 'indent').get} onChange={bind(t, 'indent').set} min={0} max={40} step={1} unit="мм" />
         </Field>
         <Toggle value={bind(t, 'hyphenate').get} onChange={bind(t, 'hyphenate').set} label="Переносить слова по слогам" />
+        <Toggle
+          value={() => t.value.paraGap !== false}
+          onChange={(v: boolean) => t.patch({ paraGap: v })}
+          label="Пустая строка между абзацами"
+          hint="Выключите, чтобы абзацы шли подряд: текст станет плотнее и уйдёт меньше листов"
+        />
+        <Toggle value={() => t.value.cursive !== false} onChange={(v: boolean) => t.patch({ cursive: v })} label="Связное письмо" hint="Соединять буквы в слове одной линией. Выключите, если пишете буквы раздельно или соединения выходят кривыми" />
       </Section>
       <Section title="Живость почерка">
         <Field label="Живость" hint="0 — ровно как по линейке, 10 — заметно «от руки»">
