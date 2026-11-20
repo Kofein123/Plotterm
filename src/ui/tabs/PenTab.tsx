@@ -101,6 +101,32 @@ export function PenTab() {
             </Note>
           ) : null;
         }}
+        {() => {
+          const m = app.machine;
+          const acc = [120, 121].map((k) => parseFloat(m.settings.value.get(k) ?? ''));
+          const low = acc.filter((v) => Number.isFinite(v) && v < 400);
+          return low.length ? (
+            <Note kind="info">
+              Ускорение платы $120/$121 = {acc.map((v) => (Number.isFinite(v) ? v : '?')).join(' / ')} мм/с². На каждой букве каретка
+              разгоняется и тормозит, поэтому с таким ускорением высокая скорость письма почти не даёт выигрыша. Для лёгкой каретки с
+              ручкой обычно спокойно идёт 600.{' '}
+              <Btn small kind="primary" onClick={() => { void writeSetting(120, '600'); }}>$120=600</Btn>{' '}
+              <Btn small kind="primary" onClick={() => { void writeSetting(121, '600'); }}>$121=600</Btn>{' '}
+              Если после этого пропускаются шаги или буквы «съезжают» — верните прежнее значение (копия настроек скачивается перед записью).
+            </Note>
+          ) : null;
+        }}
+        {() => {
+          const m = app.machine;
+          const rate = [110, 111].map((k) => parseFloat(m.settings.value.get(k) ?? ''));
+          const lim = Math.min(...rate.filter((v) => Number.isFinite(v)));
+          return Number.isFinite(lim) && lim < feedOf(app.speed.value) ? (
+            <Note kind="warn">
+              Плата не даст ехать быстрее {lim} мм/мин ($110/$111), какую бы скорость письма вы ни выбрали. Поднять предел можно на
+              вкладке «Ещё» → настройки платы, но только до того, как мотор начнёт пропускать шаги.
+            </Note>
+          ) : null;
+        }}
         <div class="muted small">
           Проверка: «Напечатать полосу скоростей» выше и «Пробный абзац» на вкладке «Калибровка». Если буквы рвутся или
           ручка пропускает линию — сбавьте скорость или включите обычное опускание.
