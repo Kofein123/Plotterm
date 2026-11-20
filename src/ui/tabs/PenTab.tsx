@@ -2,7 +2,7 @@ import { h } from '../dom.ts';
 import { app } from '../../app/state.ts';
 import { SPEED_PROFILES, feedOf } from '../../core/types.ts';
 import { Btn, Field, NumInput, Note, Section, Segmented, Toggle, bind } from '../components.tsx';
-import { measurePenLift, printPattern, writeSetting } from '../../app/actions.ts';
+import { measurePenLift, printPattern, speedUpAll, writeSetting } from '../../app/actions.ts';
 import { fmtTime } from '../../app/notify.ts';
 
 /** Куда уходит время текущей страницы: письмо / подъёмы ручки / переезды. */
@@ -73,6 +73,13 @@ export function PenTab() {
       </Section>
       <Section title="Быстрее">
         <TimeBreakdown />
+        <div class="row wrap">
+          <Btn kind="primary" onClick={() => { void speedUpAll(); }} disabled={() => app.job.active}>Настроить на быстро</Btn>
+          <span class="muted small">
+            Разом: скорость 6000 мм/мин, низкий подъём 2 мм, опускание на полной скорости, упрощение линий — и, если плоттер на связи,
+            ускорение платы $120/$121 = 600 и $11 = 0,05 (с копией настроек и подтверждением).
+          </span>
+        </div>
         {() => {
           const up = Math.abs(app.calib.value.upZ);
           return app.calib.value.penSet && up > 5 ? (

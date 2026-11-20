@@ -2,7 +2,7 @@ import { h } from "../dom.js";
 import { app } from "../../app/state.js";
 import { SPEED_PROFILES, feedOf } from "../../core/types.js";
 import { Btn, Field, NumInput, Note, Section, Segmented, Toggle, bind } from "../components.js";
-import { measurePenLift, printPattern, writeSetting } from "../../app/actions.js";
+import { measurePenLift, printPattern, speedUpAll, writeSetting } from "../../app/actions.js";
 import { fmtTime } from "../../app/notify.js";
 /** Куда уходит время текущей страницы: письмо / подъёмы ручки / переезды. */
 function TimeBreakdown() {
@@ -65,6 +65,9 @@ export function PenTab() {
             h(Btn, { small: true, onClick: () => printPattern('speed') }, "\u041D\u0430\u043F\u0435\u0447\u0430\u0442\u0430\u0442\u044C \u043F\u043E\u043B\u043E\u0441\u0443 \u0441\u043A\u043E\u0440\u043E\u0441\u0442\u0435\u0439")),
         h(Section, { title: "\u0411\u044B\u0441\u0442\u0440\u0435\u0435" },
             h(TimeBreakdown, null),
+            h("div", { class: "row wrap" },
+                h(Btn, { kind: "primary", onClick: () => { void speedUpAll(); }, disabled: () => app.job.active }, "\u041D\u0430\u0441\u0442\u0440\u043E\u0438\u0442\u044C \u043D\u0430 \u0431\u044B\u0441\u0442\u0440\u043E"),
+                h("span", { class: "muted small" }, "\u0420\u0430\u0437\u043E\u043C: \u0441\u043A\u043E\u0440\u043E\u0441\u0442\u044C 6000 \u043C\u043C/\u043C\u0438\u043D, \u043D\u0438\u0437\u043A\u0438\u0439 \u043F\u043E\u0434\u044A\u0451\u043C 2 \u043C\u043C, \u043E\u043F\u0443\u0441\u043A\u0430\u043D\u0438\u0435 \u043D\u0430 \u043F\u043E\u043B\u043D\u043E\u0439 \u0441\u043A\u043E\u0440\u043E\u0441\u0442\u0438, \u0443\u043F\u0440\u043E\u0449\u0435\u043D\u0438\u0435 \u043B\u0438\u043D\u0438\u0439 \u2014 \u0438, \u0435\u0441\u043B\u0438 \u043F\u043B\u043E\u0442\u0442\u0435\u0440 \u043D\u0430 \u0441\u0432\u044F\u0437\u0438, \u0443\u0441\u043A\u043E\u0440\u0435\u043D\u0438\u0435 \u043F\u043B\u0430\u0442\u044B $120/$121 = 600 \u0438 $11 = 0,05 (\u0441 \u043A\u043E\u043F\u0438\u0435\u0439 \u043D\u0430\u0441\u0442\u0440\u043E\u0435\u043A \u0438 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u0438\u0435\u043C).")),
             () => {
                 const up = Math.abs(app.calib.value.upZ);
                 return app.calib.value.penSet && up > 5 ? (h(Note, { kind: "warn" },
