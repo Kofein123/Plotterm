@@ -341,6 +341,8 @@ export function flipPageSide() {
         app.paper.patch({ leftFirst: !p.leftFirst });
         return toast(`Чередование: первая страница теперь ${!p.leftFirst ? 'левая' : 'правая'}.`, 'ok');
     }
+    if (p.side === 'none')
+        return toast('Сейчас выбрано «Нет»: красной линии на листе нет.', 'info');
     const next = p.side === 'left' ? 'right' : 'left';
     app.paper.patch({ side: next });
     toast(`Красная линия ${next === 'left' ? 'слева' : 'справа'}.`, 'ok');

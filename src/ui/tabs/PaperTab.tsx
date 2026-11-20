@@ -2,7 +2,7 @@ import { h } from '../dom.ts';
 import { app, PAPER_PRESETS } from '../../app/state.ts';
 import { Btn, Field, NumInput, Note, Section, Segmented, Toggle, bind } from '../components.tsx';
 import { flipPageSide, syncPaperToFrame, traceMargins } from '../../app/actions.ts';
-import type { PaperTemplate } from '../../core/types.ts';
+import type { PaperSettings, PaperTemplate } from '../../core/types.ts';
 
 export function PaperTab() {
   const p = app.paper;
@@ -50,7 +50,7 @@ export function PaperTab() {
           tpl() === 'grid' ? (
             <div class="grid2">
               <Field label="Клетка"><NumInput value={bind(p, 'cell').get} onChange={bind(p, 'cell').set} min={2} max={15} step={0.1} unit="мм" /></Field>
-              <Field label="Строка через" hint="клеток между строками">
+              <Field label="Строка через" hint="клеток между строками: 1 — вдвое плотнее и вдвое меньше листов">
                 <Segmented value={bind(p, 'gridLineCells').get} onChange={bind(p, 'gridLineCells').set} options={[1, 2, 3].map((n) => ({ value: n, label: String(n) }))} />
               </Field>
             </div>
@@ -60,6 +60,14 @@ export function PaperTab() {
             <Field label="Межстрочный шаг"><NumInput value={bind(p, 'blankLineStep').get} onChange={bind(p, 'blankLineStep').set} min={3} max={30} step={0.5} unit="мм" /></Field>
           )
         }
+        {() => {
+          const pg = app.layout.value.pages[0];
+          return pg ? (
+            <div class="muted small">
+              {pg.totalLines} строк на странице, всего {app.pageCount.value} стр. Плотнее — меньший шаг строк, буква поменьше («Почерк» → высота строчной) и выключенная пустая строка между абзацами.
+            </div>
+          ) : null;
+        }}
         {() =>
           tpl() === 'grid' || tpl() === 'ruled' ? (
             <div class="muted small">
@@ -88,13 +96,23 @@ export function PaperTab() {
           hint="Плоттер напишет сначала левую страницу, потом правую, и попросит перевернуть лист только после обеих. Ширина листа удваивается — задайте ширину всего разворота"
         />
         <Field label="Красная линия (широкое поле)" hint="правая страница тетради — линия справа, левая — слева; «Чередовать» переносит её сама через страницу">
-          <Segmented value={bind(p, 'side').get} onChange={bind(p, 'side').set} options={[{ value: 'right', label: 'Справа' }, { value: 'left', label: 'Слева' }, { value: 'alternate', label: 'Чередовать' }]} />
+          <Segmented
+            value={bind(p, 'side').get}
+            onChange={(v: PaperSettings['side']) => {
+              // «Нет» — тетрадь без красной линии: поля с обеих сторон одинаковые, по узкому
+              if (v !== 'none') return p.patch({ side: v });
+              const cur = p.peek();
+              const narrow = Math.min(cur.marginLeft, cur.marginRight);
+              p.patch({ side: v, marginLeft: narrow, marginRight: narrow });
+            }}
+            options={[{ value: 'right', label: 'Справа' }, { value: 'left', label: 'Слева' }, { value: 'alternate', label: 'Чередовать' }, { value: 'none', label: 'Нет' }]} />
         </Field>
         <div class="row wrap">
           <Btn small kind="ghost" onClick={() => flipPageSide()} title="Перенести широкое поле с красной линией на другую сторону">⇆ Линию на другую сторону</Btn>
           {() => {
             const pp = p.value;
             if (pp.spread) return <span class="muted small">Разворот: красная линия стоит у внешнего края каждой половины.</span>;
+            if (pp.side === 'none') return <span class="muted small">Тетрадь без красной линии: поля слева и справа одинаковые, текст идёт во всю ширину.</span>;
             const pi = app.currentPage.value;
             const m = app.layout.value.pages[pi]?.mirrored ?? (pp.side === 'left' || (pp.side === 'alternate' && (pp.leftFirst ? pi % 2 === 0 : pi % 2 === 1)));
             return <span class="muted small">Сейчас на странице {pi + 1} красная линия {m ? 'слева' : 'справа'}.</span>;

@@ -183,6 +183,8 @@ export function Preview() {
         ctx.moveTo(tu(mu), 0);
         ctx.lineTo(tu(mu), p.height);
       }
+    } else if (p.side === 'none') {
+      // тетрадь без красной линии — поле не рисуем
     } else if (p.template !== 'a4') {
       const mu = mirrored ? mL : p.width - mR;
       ctx.moveTo(tu(mu), 0);
