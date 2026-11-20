@@ -400,13 +400,41 @@ export function paperMismatch() {
     const p = app.paper.peek();
     return f.ready && (Math.abs(p.width - f.width) > 1 || Math.abs(p.height - f.height) > 1);
 }
-/** Взять размер бумаги с откалиброванного листа. true — если что-то поменялось. */
+/** Во сколько раз подогнался текст при последнем `syncPaperToFrame` (0 — не подгонялся). */
+let lastFit = 0;
+export const fitFactor = () => lastFit;
+/**
+ * Взять размер бумаги с откалиброванного листа. true — если что-то поменялось.
+ * Если включена подгонка, вместе с листом пропорционально меняются буквы, поля и разлиновка,
+ * чтобы на новом листе помещалось столько же, сколько на прежнем.
+ */
 export function syncPaperToFrame() {
     if (!paperMismatch())
         return false;
     const f = app.frame.peek();
+    const p = app.paper.peek();
     const r = (v) => Math.round(v * 2) / 2;
-    app.paper.patch({ width: r(f.width), height: r(f.height) });
+    const k = Math.min(f.width / p.width, f.height / p.height);
+    const fit = p.autoFit !== false && Number.isFinite(k) && k > 0.2 && k < 5 && Math.abs(k - 1) > 0.02;
+    const r2 = (v) => Math.round(v * k * 10) / 10;
+    // клетку и линейку не трогаем: это разлиновка самой тетради, она не зависит от того, как лист откалиброван
+    const ruled = p.template === 'grid' || p.template === 'ruled';
+    app.paper.patch(fit
+        ? {
+            width: r(f.width), height: r(f.height),
+            marginTop: r2(p.marginTop), marginBottom: r2(p.marginBottom), marginLeft: r2(p.marginLeft), marginRight: r2(p.marginRight),
+            ...(ruled ? {} : { blankLineStep: Math.max(3, r2(p.blankLineStep)) }),
+        }
+        : { width: r(f.width), height: r(f.height) });
+    if (fit) {
+        const t = app.typo.peek();
+        // в тетради высоту буквы задаёт клетка, а не размер листа — там меняем только красную строку
+        app.typo.patch({
+            ...(ruled ? {} : { xHeight: Math.min(7, Math.max(1.5, Math.round(t.xHeight * k * 10) / 10)) }),
+            indent: Math.round(t.indent * k),
+        });
+    }
+    lastFit = fit ? k : 0;
     return true;
 }
 /** Обвести поля (область текста) поднятой ручкой — увидеть на настоящем листе, где будет текст. */
@@ -439,8 +467,11 @@ export function calibCorner() {
     if (f.width < 100 || f.height < 100) {
         toast(`Область ${f.width.toFixed(0)}×${f.height.toFixed(0)} мм — меньше листа. Край (шаг 3) ставится в ПРАВЫЙ НИЖНИЙ угол самого листа, а ноль (шаг 2) — точно в левый верхний: поля отсчитываются от этих точек.`, 'warn', 14000);
     }
-    else if (syncPaperToFrame())
-        toast(`Лист: ${f.width.toFixed(1)} × ${f.height.toFixed(1)} мм — размер бумаги в программе подстроен под настоящий лист, поля отсчитываются от его краёв.`, 'ok', 10000);
+    else if (syncPaperToFrame()) {
+        const k = fitFactor();
+        toast(`Лист: ${f.width.toFixed(1)} × ${f.height.toFixed(1)} мм — размер бумаги подстроен под настоящий лист.` +
+            (k ? ` Текст подогнан под него: буквы, поля и разлиновка ×${k.toFixed(2)} (выключается на вкладке «Бумага»).` : ''), 'ok', 10000);
+    }
     else
         toast(`Лист: ${f.width.toFixed(1)} × ${f.height.toFixed(1)} мм. Каретка больше не выйдет за эти границы.`, 'ok', 8000);
 }

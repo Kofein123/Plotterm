@@ -30,6 +30,12 @@ export function PaperTab() {
           <Field label="Ширина"><NumInput value={bind(p, 'width').get} onChange={bind(p, 'width').set} min={20} max={400} unit="мм" /></Field>
           <Field label="Высота"><NumInput value={bind(p, 'height').get} onChange={bind(p, 'height').set} min={20} max={400} unit="мм" /></Field>
         </div>
+        <Toggle
+          value={() => p.value.autoFit !== false}
+          onChange={(v: boolean) => p.patch({ autoFit: v })}
+          label="Подгонять текст под лист"
+          hint="После шага 3 калибровки буквы, поля и разлиновка меняются вместе с размером листа, чтобы на странице помещалось столько же"
+        />
         {() => {
           const f = app.frame.value;
           const pp = p.value;
