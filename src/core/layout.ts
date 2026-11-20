@@ -193,7 +193,8 @@ export function layoutText(inp: LayoutInput): LayoutResult {
       continue;
     }
     if (para.kind === 'blank') {
-      takeSlot();
+      // «Пустая строка между абзацами» выключена — абзацы идут подряд, страниц уходит меньше
+      if (typo.paraGap !== false) takeSlot();
       continue;
     }
     if (para.kind === 'image') {

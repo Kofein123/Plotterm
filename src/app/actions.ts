@@ -327,6 +327,7 @@ export function flipPageSide() {
     app.paper.patch({ leftFirst: !p.leftFirst });
     return toast(`Чередование: первая страница теперь ${!p.leftFirst ? 'левая' : 'правая'}.`, 'ok');
   }
+  if (p.side === 'none') return toast('Сейчас выбрано «Нет»: красной линии на листе нет.', 'info');
   const next = p.side === 'left' ? 'right' : 'left';
   app.paper.patch({ side: next });
   toast(`Красная линия ${next === 'left' ? 'слева' : 'справа'}.`, 'ok');
@@ -539,6 +540,47 @@ export async function writeSetting(key: number | string, value: string) {
     toast(`$${key}=${value} записано.`, 'ok');
   } catch (e: any) {
     toast('Не записалось: ' + (e?.message ?? e), 'err');
+  }
+}
+
+/**
+ * «Настроить на быстро»: разом ставит скорость письма, низкий подъём и упрощение линий,
+ * а если плата на связи — поднимает её ускорение и порог поворотов (с копией настроек).
+ */
+export async function speedUpAll() {
+  app.speed.patch({ profile: 'draft', simplify: 0.1, joinTolerance: 0.2, travelFeed: 0 });
+  app.pen.patch({ hopLift: 2, hopDistance: 10, zDownRapid: true, dwellMs: 0 });
+  const done = ['скорость письма 6000 мм/мин', 'низкий подъём 2 мм', 'упрощение линий 0,1 мм', 'опускание на полной скорости'];
+  if (!machine.connected) {
+    toast('Готово: ' + done.join(', ') + '. Плата не на связи — её настройки ($11, $120, $121) запишутся, когда подключитесь и нажмёте ещё раз.', 'ok', 12000);
+    return;
+  }
+  if (job.active) return toast('Во время печати настройки платы менять нельзя. Настройки программы уже применены.', 'warn');
+  const want: [number, string][] = [[11, '0.050'], [120, '600'], [121, '600']];
+  const cur = machine.settings.peek();
+  const todo = want.filter(([k, v]) => {
+    const now = parseFloat(cur.get(k) ?? '');
+    return !Number.isFinite(now) || now < parseFloat(v);
+  });
+  if (!todo.length) {
+    toast('Готово: ' + done.join(', ') + '. В плате всё уже выставлено.', 'ok', 10000);
+    return;
+  }
+  const list = todo.map(([k, v]) => `$${k}=${v}`).join(', ');
+  const ok = confirm(
+    `Записать в плату ${list}?\n\nЭто ускорение осей и порог поворотов. Перед записью скачается копия всех текущих настроек; если мотор начнёт пропускать шаги — верните прежние значения из копии.`,
+  );
+  if (!ok) {
+    toast('Настройки программы применены, плату не трогал.', 'ok');
+    return;
+  }
+  try {
+    await backupSettings();
+    for (const [k, v] of todo) await machine.send(`$${k}=${v}`);
+    await machine.refreshSettings();
+    toast('Готово: ' + done.join(', ') + `, в плате ${list}.`, 'ok', 12000);
+  } catch (e: any) {
+    toast('Настройки программы применены, но плата не приняла: ' + (e?.message ?? e), 'err');
   }
 }
 

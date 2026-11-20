@@ -229,3 +229,11 @@ test('чередование страниц: красная линия пере�
   assert.equal(b.pages[0].mirrored, true);
   assert.equal(b.pages[1].mirrored, false);
 });
+
+test('без пустой строки между абзацами текст занимает меньше страниц', () => {
+  const text = Array.from({ length: 40 }, (_, i) => `абзац номер ${i + 1}`).join('\n\n');
+  const wide = layoutText({ text, font: BUILTIN_FONTS[0], typo, paper });
+  const tight = layoutText({ text, font: BUILTIN_FONTS[0], typo: { ...typo, paraGap: false }, paper });
+  const used = (r: ReturnType<typeof layoutText>) => r.pages.reduce((a, p) => a + p.usedLines, 0);
+  assert.ok(used(tight) < used(wide), `плотнее: ${used(tight)} против ${used(wide)}`);
+});

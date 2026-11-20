@@ -41,6 +41,12 @@ export function FontTab() {
           <NumInput value={bind(t, 'indent').get} onChange={bind(t, 'indent').set} min={0} max={40} step={1} unit="мм" />
         </Field>
         <Toggle value={bind(t, 'hyphenate').get} onChange={bind(t, 'hyphenate').set} label="Переносить слова по слогам" />
+        <Toggle
+          value={() => t.value.paraGap !== false}
+          onChange={(v: boolean) => t.patch({ paraGap: v })}
+          label="Пустая строка между абзацами"
+          hint="Выключите, чтобы абзацы шли подряд: текст станет плотнее и уйдёт меньше листов"
+        />
         <Toggle value={() => t.value.cursive !== false} onChange={(v: boolean) => t.patch({ cursive: v })} label="Связное письмо" hint="Соединять буквы в слове одной линией. Выключите, если пишете буквы раздельно или соединения выходят кривыми" />
       </Section>
       <Section title="Живость почерка">

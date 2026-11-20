@@ -79,8 +79,8 @@ export interface PaperSettings {
   gridLineCells: number;
   /** линейка: шаг линий */
   rulePitch: number;
-  /** правая / левая страница / чередовать (поля зеркалятся на левой) */
-  side: 'right' | 'left' | 'alternate';
+  /** правая / левая страница / чередовать (поля зеркалятся на левой) / без красной линии */
+  side: 'right' | 'left' | 'alternate' | 'none';
   /** тетрадь лежит разворотом: на листе две страницы, левая и правая половина */
   spread?: boolean;
   /** при «Чередовать»: первая страница — левая (красная линия сразу слева) */
@@ -105,6 +105,8 @@ export interface TypographySettings {
   hyphenate: boolean;
   /** красная строка, мм */
   indent: number;
+  /** пустая строка между абзацами (выключить — текст плотнее, уходит меньше листов) */
+  paraGap?: boolean;
   /** живость почерка 0–10 */
   liveliness: number;
   seed: number;

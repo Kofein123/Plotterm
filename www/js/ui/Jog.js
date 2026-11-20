@@ -78,9 +78,6 @@ export function Jog(props) {
                 " \u00B7",
                 ' ',
                 () => (app.isPenDown(m.wpos.value[2]) ? 'ручка внизу' : 'ручка вверху'))) : null),
-        () => app.machine.conn.value === 'connected' && app.calib.value.penSet && app.isPenDown(app.machine.wpos.value[2]) ? (h("div", { class: "jog-pendown" },
-            h("span", null, "\u0420\u0443\u0447\u043A\u0430 \u0432\u043D\u0438\u0437\u0443 \u2014 \u043F\u0440\u0438 \u043F\u0435\u0440\u0435\u0435\u0437\u0434\u0435 \u043E\u043D\u0430 \u043F\u0440\u043E\u0447\u0435\u0440\u0442\u0438\u0442 \u043B\u0438\u0441\u0442."),
-            h("button", { class: "btn btn-small btn-primary", onClick: () => penUp() }, "\u041F\u043E\u0434\u043D\u044F\u0442\u044C \u0440\u0443\u0447\u043A\u0443"))) : null,
         () => app.calib.value.cornerSet ? (h(Toggle, { value: () => clampJog.value, onChange: (v) => (clampJog.value = v), label: "\u041D\u0435 \u0432\u044B\u0435\u0437\u0436\u0430\u0442\u044C \u0437\u0430 \u043B\u0438\u0441\u0442", hint: "\u041F\u043E\u0441\u043B\u0435 \u043A\u0430\u043B\u0438\u0431\u0440\u043E\u0432\u043A\u0438 \u043A\u0430\u0440\u0435\u0442\u043A\u0430 \u043D\u0435 \u0443\u0439\u0434\u0451\u0442 \u0437\u0430 \u0433\u0440\u0430\u043D\u0438\u0446\u044B \u043B\u0438\u0441\u0442\u0430" })) : null,
         h("div", { class: "jog-flip" },
             h("div", { class: "muted small" }, () => app.calib.value.cornerSet
