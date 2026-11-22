@@ -17,6 +17,8 @@ export interface LayoutInput {
   gridOrigin?: [number, number] | null;
   /** рисунки по id из разметки `![подпись](img:ID)`: линии в долях ширины */
   images?: Record<string, VectorDrawing>;
+  /** все рисунки, кроме помеченных «место», рисовать карандашом */
+  pencilImages?: boolean;
   /** собрать трассу вёрстки (каждая буква и каждый связный штрих) — для метрик качества */
   trace?: boolean;
 }
@@ -198,7 +200,7 @@ export function layoutText(inp: LayoutInput): LayoutResult {
       continue;
     }
     if (para.kind === 'image') {
-      placeImage(para.id, para.width, para.tool);
+      placeImage(para.id, para.width, inp.pencilImages && para.tool === 'pen' ? 'pencil' : para.tool);
       continue;
     }
     // слова

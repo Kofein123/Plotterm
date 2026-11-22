@@ -237,3 +237,13 @@ test('без пустой строки между абзацами текст з
   const used = (r: ReturnType<typeof layoutText>) => r.pages.reduce((a, p) => a + p.usedLines, 0);
   assert.ok(used(tight) < used(wide), `плотнее: ${used(tight)} против ${used(wide)}`);
 });
+
+test('«все рисунки карандашом» помечает рисунки страницы карандашом', () => {
+  const text = 'Текст перед схемой\n\n![Схема](img:a)\n\n![Оставить место](img:b место)\n';
+  const images = { a: { paths: [[0, 0, 1, 1]], aspect: 0.6 }, b: { paths: [[0, 0, 1, 1]], aspect: 0.6 } } as any;
+  const plain = layoutText({ text, font: BUILTIN_FONTS[0], typo, paper, images });
+  const pencil = layoutText({ text, font: BUILTIN_FONTS[0], typo, paper, images, pencilImages: true });
+  const tools = (r: ReturnType<typeof layoutText>) => r.pages.flatMap((p) => p.images.map((im) => im.tool)).sort();
+  assert.deepEqual(tools(plain), ['pen', 'space']);
+  assert.deepEqual(tools(pencil), ['pencil', 'space']);
+});

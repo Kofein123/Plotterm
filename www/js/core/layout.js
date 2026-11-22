@@ -168,7 +168,7 @@ export function layoutText(inp) {
             continue;
         }
         if (para.kind === 'image') {
-            placeImage(para.id, para.width, para.tool);
+            placeImage(para.id, para.width, inp.pencilImages && para.tool === 'pen' ? 'pencil' : para.tool);
             continue;
         }
         // слова

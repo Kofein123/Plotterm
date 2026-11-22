@@ -54,6 +54,8 @@ export interface Prefs {
   timeFactor: number;
   leftTab: string;
   baud: number;
+  /** все рисунки рисовать карандашом: плоттер напишет текст ручкой и попросит сменить её на карандаш */
+  pencilImages?: boolean;
 }
 const DEFAULT_PREFS: Prefs = {
   jogStep: 1, jogFeed: 3000, zStep: 0.5, zFeed: 600, simSpeed: 4, showTravel: false, keepSignals: false,
@@ -102,7 +104,10 @@ export const app = createRoot(() => {
   const layout = signal<LayoutResult>({ pages: [], missingChars: [], chars: 0 });
   let layoutTimer: ReturnType<typeof setTimeout> | undefined;
   effect(() => {
-    const inp = { text: text.value, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin, images: images.value };
+    const inp = {
+      text: text.value, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin, images: images.value,
+      pencilImages: !!prefs.value.pencilImages,
+    };
     clearTimeout(layoutTimer);
     layoutTimer = setTimeout(() => {
       layout.value = layoutText(inp);
@@ -111,7 +116,10 @@ export const app = createRoot(() => {
 
   /** Вёрстка прямо сейчас, без задержки: нужна, чтобы понять, на какой странице окажется рисунок. */
   const layoutNow = (t: string) =>
-    layoutText({ text: t, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin, images: images.value });
+    layoutText({
+      text: t, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin, images: images.value,
+      pencilImages: !!prefs.value.pencilImages,
+    });
 
   const machine = new Machine();
   const limits = computed<MachineLimits>(() => {
