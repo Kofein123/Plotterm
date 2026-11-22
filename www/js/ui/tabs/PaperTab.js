@@ -90,6 +90,13 @@ export function PaperTab() {
                     return null;
                 const f = app.frame.value;
                 const half = (pp.width / 2).toFixed(1);
+                if (f.ready && f.height > f.width * 1.1)
+                    return (h(Note, { kind: "warn" },
+                        "\u041F\u043E \u043A\u0430\u043B\u0438\u0431\u0440\u043E\u0432\u043A\u0435 \u043B\u0438\u0441\u0442 ",
+                        f.width.toFixed(1),
+                        " \u00D7 ",
+                        f.height.toFixed(1),
+                        " \u043C\u043C \u2014 \u043E\u043D \u0432\u044B\u0448\u0435, \u0447\u0435\u043C \u0448\u0438\u0440\u0435, \u0442\u043E \u0435\u0441\u0442\u044C \u0438\u0437\u043C\u0435\u0440\u0435\u043D\u0430 \u043E\u0434\u043D\u0430 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0430, \u0430 \u043D\u0435 \u0440\u0430\u0437\u0432\u043E\u0440\u043E\u0442. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u0448\u0430\u0433 3: \u00AB\u0417\u0434\u0435\u0441\u044C \u043A\u0440\u0430\u0439\u00BB \u0441\u0442\u0430\u0432\u0438\u0442\u0441\u044F \u0432 \u043F\u0440\u0430\u0432\u044B\u0439 \u043D\u0438\u0436\u043D\u0438\u0439 \u0443\u0433\u043E\u043B \u041F\u0420\u0410\u0412\u041E\u0419 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u044B, \u0442\u043E\u0433\u0434\u0430 \u0448\u0438\u0440\u0438\u043D\u0430 \u0441\u0442\u0430\u043D\u0435\u0442 \u043F\u0440\u0438\u043C\u0435\u0440\u043D\u043E \u0432\u0434\u0432\u043E\u0435 \u0431\u043E\u043B\u044C\u0448\u0435 \u0432\u044B\u0441\u043E\u0442\u044B \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u044B."));
                 return f.ready && Math.abs(f.width - pp.width) > 2 ? (h(Note, { kind: "warn" },
                     "\u0428\u0438\u0440\u0438\u043D\u0430 \u0440\u0430\u0437\u0432\u043E\u0440\u043E\u0442\u0430 \u0432 \u043F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0435 ",
                     pp.width,
@@ -110,7 +117,8 @@ export function PaperTab() {
                         if (v !== 'none')
                             return p.patch({ side: v });
                         const cur = p.peek();
-                        const narrow = Math.min(cur.marginLeft, cur.marginRight);
+                        // поля одинаковые по узкому, но не впритык к краю: иначе буквы уезжают за лист
+                        const narrow = Math.max(5, Math.min(cur.marginLeft, cur.marginRight));
                         p.patch({ side: v, marginLeft: narrow, marginRight: narrow });
                     }, options: [{ value: 'right', label: 'Справа' }, { value: 'left', label: 'Слева' }, { value: 'alternate', label: 'Чередовать' }, { value: 'none', label: 'Нет' }] })),
             h("div", { class: "row wrap" },
