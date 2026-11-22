@@ -6,7 +6,7 @@ void Fragment;
 
 type Getter<T> = () => T;
 
-export function Field(props: { label: string; hint?: string | Getter<string>; children?: Child; wide?: boolean }) {
+export function Field(props: { label: string | Getter<string>; hint?: string | Getter<string>; children?: Child; wide?: boolean }) {
   return (
     <label class={'field' + (props.wide ? ' field-wide' : '')}>
       <span class="field-label">{props.label}</span>
@@ -218,6 +218,7 @@ export function Icon(props: { name: string; size?: number }) {
     unlock: 'M7 11V7a5 5 0 0 1 9.6-2M5 11h14v10H5z',
     frame: 'M3 3h18v18H3z',
     zoom: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM21 21l-5-5',
+    redo: 'M15 14l5-5-5-5M20 9h-9a5 5 0 0 0 0 10h3',
     dice: 'M4 4h16v16H4zM8.5 8.5h.01M15.5 15.5h.01M15.5 8.5h.01M8.5 15.5h.01M12 12h.01',
     check: 'M4 12l5 5L20 6',
     warn: 'M12 3l10 18H2zM12 10v5M12 18h.01',

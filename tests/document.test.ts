@@ -1,0 +1,240 @@
+// Лекция из файла: разметка рисунков и таблиц, вёрстка, разбор PDF-строк, перевод картинки в линии.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { BUILTIN_FONTS, autoJoin, mergeTouching, resolveGlyph, dropBaselineSpecks, dropStrays } from '../src/fonts/fonts.ts';
+import { dropOutliers } from '../src/fonts/variants.ts';
+import { layoutText } from '../src/core/layout.ts';
+import { parseMarkup } from '../src/core/markup.ts';
+import { structure, imageBoxes, type TextItem } from '../src/io/document.ts';
+import { vectorize } from '../src/io/vectorize.ts';
+import { findImageLine, moveImage, removeImage, setImage } from '../src/core/editmarkup.ts';
+import { tidyOcr } from '../src/io/ocr.ts';
+import type { PaperSettings, TypographySettings } from '../src/core/types.ts';
+
+const paper: PaperSettings = { template: 'a4', width: 210, height: 297, marginTop: 15, marginBottom: 15, marginLeft: 20, marginRight: 15, blankLineStep: 9, cell: 5, gridLineCells: 2, rulePitch: 8, side: 'right', rotate180: false, startLine: 1 };
+const typo: TypographySettings = { fontId: 'gost-a', xHeight: 3, slant: 10, letterSpacing: 1, wordSpacing: 1, align: 'left', hyphenate: true, indent: 10, liveliness: 2, seed: 1 };
+
+const font = BUILTIN_FONTS[0];
+
+test('разметка: рисунок с шириной и инструментом, подпись отдельной строкой', () => {
+  const p = parseMarkup('![Рис. 1](img:a1 50% карандаш)\n![](img:b2 место)\n![](img:c3)');
+  assert.deepEqual(p[0], { kind: 'image', id: 'a1', caption: 'Рис. 1', width: 0.5, tool: 'pencil' });
+  assert.equal(p[1].kind, 'text');
+  // без процента — во всю ширину строки: мелкую картинку из лекции иначе не разобрать
+  assert.deepEqual(p[2], { kind: 'image', id: 'b2', caption: '', width: 1, tool: 'space' });
+  assert.deepEqual(p[3], { kind: 'image', id: 'c3', caption: '', width: 1, tool: 'pen' });
+});
+
+test('разметка: строки таблицы, разделитель Markdown пропускается', () => {
+  const p = parseMarkup('| а | б |\n|---|---|\n| 1 | 2 |');
+  assert.equal(p.length, 2);
+  assert.equal(p[0].kind, 'row');
+  if (p[0].kind === 'row') assert.equal(p[0].cells.length, 2);
+});
+
+test('вёрстка: рисунок занимает строки, карандашные штрихи помечены, «место» пустое', () => {
+  const images = { r: { aspect: 0.5, paths: [[0, 0, 1, 0, 1, 0.5, 0, 0.5, 0, 0]] } };
+  const run = (opt: string) => layoutText({ text: `до\n![](img:r 50%${opt})\nпосле`, font, typo, paper, images });
+  const pen = run('');
+  const pencil = run(' карандаш');
+  const space = run(' место');
+  const frame = pen.pages[0].strokes.filter((s) => s.line === 0);
+  assert.equal(frame.length, 1);
+  const xs = frame[0].pts.filter((_, i) => i % 2 === 0);
+  const w = Math.max(...xs) - Math.min(...xs);
+  assert.ok(Math.abs(w - (paper.width - paper.marginLeft - paper.marginRight) * 0.5) < 0.01, `${w}`);
+  assert.equal(pencil.pages[0].strokes.filter((s) => s.tool === 'pencil').length, 1);
+  assert.equal(space.pages[0].strokes.filter((s) => s.line === 0).length, 0);
+  // «после» стоит ниже рисунка, одинаково при любом инструменте
+  const lastLine = (r: typeof pen) => Math.max(...r.pages[0].strokes.map((s) => s.line));
+  assert.equal(lastLine(pen), lastLine(space));
+  assert.ok(lastLine(pen) >= 1 + Math.ceil((w * 0.5) / paper.blankLineStep));
+});
+
+test('вёрстка: таблица — рамка от руки, текст внутри ячеек', () => {
+  const r = layoutText({ text: '| Термин | Определение длинное, переносится внутри ячейки по словам |\n| а | б |', font, typo: { ...typo, slant: 0 }, paper });
+  const lines = r.pages[0].strokes.filter((s) => s.line === 0);
+  // верх + низ двух рядов = 3 горизонтали, по 3 вертикали на ряд
+  assert.equal(lines.length, 3 + 3 * 2);
+  const text = r.pages[0].strokes.filter((s) => s.line > 0);
+  const left = paper.marginLeft, right = paper.width - paper.marginRight;
+  for (const s of text) for (let i = 0; i < s.pts.length; i += 2) assert.ok(s.pts[i] > left && s.pts[i] < right);
+});
+
+test('стрелки и знаки есть в любом шрифте', () => {
+  for (const ch of '→←≈≤≥±×∞°·') assert.equal(resolveGlyph(font, ch).missing, false, ch);
+});
+
+const it = (str: string, x: number, y: number, h = 10, bold = false): TextItem => ({ str, x, y, w: str.length * h * 0.5, h, bold });
+
+test('PDF: абзацы, перенос слова, заголовок, список, таблица, подпись и пометка под рисунком', () => {
+  const items = [
+    it('Заголовок раздела', 50, 40, 14, true),
+    it('Первая строка абзаца, которая идёт почти до правого края и пере-', 50, 70),
+    it('носится на следующую строку.', 50, 84),
+    it('• пункт списка', 60, 110),
+    it('Термин', 50, 140), it('Определение', 200, 140),
+    it('Калибр', 50, 160), it('Диаметр трубы', 200, 160),
+    it('4.1-сурет. Схема прибора', 150, 300),
+    it('[ басып шығару ]', 180, 314),
+    it('Текст после рисунка.', 50, 340),
+  ];
+  const t = structure(items, [{ id: 'p1i1', y: 200 }]);
+  const lines = t.trim().split('\n');
+  assert.equal(lines[0], '# Заголовок раздела');
+  assert.ok(lines.includes('Первая строка абзаца, которая идёт почти до правого края и переносится на следующую строку.'), t);
+  assert.ok(lines.includes('— пункт списка'));
+  assert.ok(lines.includes('| Термин | Определение |'));
+  assert.ok(lines.includes('| Калибр | Диаметр трубы |'));
+  assert.ok(lines.includes('![4.1-сурет. Схема прибора](img:p1i1 место)'), t);
+  assert.equal(lines[lines.length - 1], 'Текст после рисунка.');
+});
+
+test('PDF: прямоугольник картинки по матрицам save/transform/paint', () => {
+  const OPS = { save: 1, restore: 2, transform: 3, paintImageXObject: 4, paintInlineImageXObject: 5, paintImageMaskXObject: 6, paintFormXObjectBegin: 7, paintFormXObjectEnd: 8 };
+  const boxes = imageBoxes({ fnArray: [1, 3, 4, 2, 4], argsArray: [null, [200, 0, 0, 100, 50, 600], ['img1'], null, ['tiny']] }, OPS);
+  assert.deepEqual(boxes, [[50, 600, 250, 700]]);
+});
+
+test('картинка → линии: квадрат превращается в замкнутый контур нужного размера', () => {
+  const W = 200, H = 100;
+  const data = new Uint8Array(W * H).fill(255);
+  for (let x = 20; x < 180; x++) for (const y of [20, 21, 22, 78, 79, 80]) data[y * W + x] = 0;
+  for (let y = 20; y < 81; y++) for (const x of [20, 21, 22, 177, 178, 179]) data[y * W + x] = 0;
+  const d = vectorize({ w: W, h: H, data });
+  assert.ok(Math.abs(d.aspect - 0.5) < 1e-9);
+  assert.ok(d.paths.length >= 1 && d.paths.length <= 4, `${d.paths.length}`);
+  const xs = d.paths.flatMap((p) => p.filter((_, i) => i % 2 === 0));
+  assert.ok(Math.min(...xs) < 0.13 && Math.max(...xs) > 0.87);
+});
+
+test('разметка: заголовки ### и **жирный** из ChatGPT', () => {
+  const p = parseMarkup('### **Краткий конспект**\nТекст **важный**');
+  assert.equal(p[0].kind, 'text');
+  if (p[0].kind !== 'text' || p[1].kind !== 'text') return;
+  assert.equal(p[0].heading, true);
+  assert.equal(p[0].chars.map((c) => c.ch).join(''), 'Краткий конспект');
+  assert.equal(p[1].chars.map((c) => c.ch).join(''), 'Текст важный');
+});
+
+test('формулы: дроби столбиком и корень с чертой, «и/или» остаётся текстом', () => {
+  const txt = (it: { ch: string }[]) => it.map((c) => c.ch).join('');
+  const p = parseMarkup('U(ω) = −2,5 / [ω(1 + 0,16ω²)], V = √(a + b)\nи/или 1/2');
+  if (p[0].kind !== 'text' || p[1].kind !== 'text') throw new Error('kind');
+  const f = p[0].chars.find((c) => c.frac)!;
+  assert.equal(txt(f.frac!.num), '2,5');
+  assert.equal(txt(f.frac!.den), 'ω(1 + 0,16ω²)');
+  // запятая после дроби — снаружи
+  assert.equal(p[0].chars[p[0].chars.indexOf(f) + 1].ch, ',');
+  const r = p[0].chars.find((c) => c.sqrt)!;
+  assert.equal(txt(r.sqrt!), 'a + b');
+  assert.ok(txt(p[1].chars).startsWith('и/или'));
+  assert.ok(p[1].chars.some((c) => c.frac));
+  // вёрстка: строка с дробью выше обычной, черта дроби есть
+  const L = layoutText({ text: 'U = 2,5/(1 + 0,16ω²)', font, typo, paper });
+  assert.ok(L.pages[0].strokes.length > 5);
+});
+
+test('картинка с компьютера: залитый круг рисуется контуром, тонкая линия — одной линией', () => {
+  const W = 300, H = 200;
+  const data = new Uint8Array(W * H).fill(255);
+  // залитый круг r=50 в (90, 100) и тонкая линия толщиной 3 справа
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if ((x - 90) ** 2 + (y - 100) ** 2 <= 50 * 50) data[y * W + x] = 0;
+  for (let y = 40; y < 160; y++) for (let x = 229; x < 232; x++) data[y * W + x] = 0;
+  const auto = vectorize({ w: W, h: H, data }, { mode: 'auto' });
+  // у круга должна быть окружность радиуса ~50 px (в долях ширины ~0.167), а не точка/крестик в центре
+  const pts = auto.paths.flatMap((p) => { const o: [number, number][] = []; for (let i = 0; i < p.length; i += 2) o.push([p[i] * W, p[i + 1] * W]); return o; });
+  const ring = pts.filter(([x, y]) => x < 160);
+  assert.ok(ring.length > 20);
+  for (const [x, y] of ring) assert.ok(Math.abs(Math.hypot(x - 90, y - 100) - 50) < 4, `${x},${y}`);
+  const line = pts.filter(([x]) => x > 200);
+  assert.ok(line.length >= 2);
+  for (const [x] of line) assert.ok(Math.abs(x - 230) < 2.5, `${x}`);
+  // по средней линии круг не обводится по краю, а стягивается к центру — за этим и нужен режим auto
+  const lines = vectorize({ w: W, h: H, data }, { mode: 'lines' });
+  const lpts = lines.paths.flatMap((p) => { const o: [number, number][] = []; for (let i = 0; i < p.length; i += 2) o.push([p[i] * W, p[i + 1] * W]); return o; })
+    .filter(([x]) => x < 160).map(([x, y]) => Math.hypot(x - 90, y - 100));
+  assert.ok(lpts.length > 0 && lpts.length < ring.length / 4);
+  assert.ok(Math.min(...lpts) < 15);
+});
+
+test('буква с фото: соринка у базовой линии убирается, разрыв по ходу линии склеивается', () => {
+  const e = { w: 90, s: [[10, 70, 40, 90, 30, 30, 39, 5], [55, 5, 55, -7], [58, 8, 89, 18]] };
+  const d = dropBaselineSpecks(e, 100);
+  assert.equal(d.s.length, 2);
+  // точка над «ё» и длинный хвост «ц» не трогаются
+  assert.equal(dropBaselineSpecks({ w: 50, s: [[0, 0, 0, 100], [20, 130, 22, 130]] }, 100).s.length, 2);
+  assert.equal(dropBaselineSpecks({ w: 50, s: [[0, 0, 0, 100], [40, 0, 45, -30]] }, 100).s.length, 2);
+  // разрыв 19 единиц по ходу — склеивается, поперёк — нет
+  assert.equal(mergeTouching([[0, 0, 40, 0], [59, 0, 90, 0]], 22, 0.6).length, 1);
+  assert.equal(mergeTouching([[0, 0, 40, 0], [40, 19, 40, 60]], 22, 0.6).length, 2);
+});
+
+test('склейка штрихов: два отрезка, сходящихся концами, становятся одним', () => {
+  const m = mergeTouching([[0, 0, 50, 0], [50, 0, 100, 0], [0, 50, 0, 90]], 10);
+  assert.equal(m.length, 2);
+  assert.deepEqual(m[0], [0, 0, 50, 0, 100, 0]);
+});
+
+test('связка для .ttf: вход слева, выход справа внизу, хвостик выхода последним', () => {
+  // «и»: левая палка сверху вниз, правая палка снизу вверх; выход — низ правой палки
+  const g = autoJoin({ w: 60, s: [[0, 100, 0, 0], [60, 100, 60, 0]] }, 100);
+  assert.deepEqual(g.i, [0, 100]);
+  assert.deepEqual(g.o, [60, 0]);
+  assert.equal(g.oi, 1);
+  assert.deepEqual(g.s[1].slice(-2), [60, 0]);
+  // буква без подходящих концов не меняется
+  const o = { w: 60, s: [[30, 50, 30, 60]] };
+  assert.equal(autoJoin(o, 100), o);
+});
+
+test('обрывки линий и подписи клеток убираются из буквы, точки у й и ё остаются', () => {
+  const body = [0, 0, 20, 100, 40, 0];
+  const g = { w: 120, s: [body, [0, 164, 16, 164], [24, 164, 40, 164], [10, 300, 20, 330], [-60, 2, 110, 2]] };
+  const out = dropStrays(g, 100, 'а');
+  assert.equal(out.s.length, 1);
+  assert.ok(out.w < 60, `ширина без мусора: ${out.w}`);
+  const yo = { w: 40, s: [body, [5, 130, 6, 131], [30, 130, 31, 131]] };
+  assert.equal(dropStrays(yo, 100, 'ё').s.length, 3);
+});
+
+test('испорченный вариант буквы (чужой кусок, сдвиг) отбрасывается', () => {
+  const ok = (dx: number) => ({ w: 60, s: [[0, 0, 30 + dx, 100, 60, 0]] });
+  const shifted = { w: 60, s: [[0, -200, 30, -100, 60, -200]] };
+  const out = dropOutliers([ok(0), ok(3), ok(-2), shifted]);
+  assert.equal(out.length, 3);
+  assert.ok(!out.includes(shifted));
+});
+
+test('правка из предпросмотра: ширина, инструмент, перенос и удаление рисунка', () => {
+  const t = 'До рисунка\n\n![Рис. 1](img:a1)\n\nПосле рисунка\n';
+  const narrow = setImage(t, 'a1', { width: 0.5, tool: 'pencil' });
+  assert.ok(narrow.includes('![Рис. 1](img:a1 50% карандаш)'));
+  // ширина во всю строку снова пишется без процента
+  assert.ok(setImage(narrow, 'a1', { width: 1, tool: 'pen' }).includes('![Рис. 1](img:a1)'));
+  const info = findImageLine(narrow, 'a1')!;
+  assert.equal(info.width, 0.5);
+  assert.equal(info.tool, 'pencil');
+  // вниз — за следующий непустой абзац, пустые строки пропускаются
+  const down = moveImage(t, 'a1', 1);
+  assert.deepEqual(down.split('\n').filter(Boolean), ['До рисунка', 'После рисунка', '![Рис. 1](img:a1)']);
+  assert.deepEqual(moveImage(t, 'a1', -1).split('\n').filter(Boolean), ['![Рис. 1](img:a1)', 'До рисунка', 'После рисунка']);
+  // у края текста рисунок остаётся на месте
+  assert.equal(moveImage(moveImage(t, 'a1', -1), 'a1', -1), moveImage(t, 'a1', -1));
+  assert.ok(!removeImage(t, 'a1').includes('img:a1'));
+  assert.equal(removeImage(t, 'zz'), t);
+});
+
+test('распознанный текст: строки абзаца склеиваются, перенос сшивается, отступ начинает абзац', () => {
+  const L = (text: string, top: number, left = 10) => ({ text, top, height: 10, left });
+  const out = tidyOcr([
+    L('Классификация электри-', 0),
+    L('ческих станций.', 12),
+    L('Цель: познакомиться с ти-', 40),
+    L('пами станций', 52),
+  ]);
+  assert.equal(out, 'Классификация электрических станций.\n\nЦель: познакомиться с типами станций\n');
+  // красная строка начинает новый абзац, даже если предыдущая строка не кончилась точкой
+  const ind = tidyOcr([L('первый абзац без точки', 0), L('второй абзац', 12, 30)]);
+  assert.equal(ind, 'первый абзац без точки\n\nвторой абзац\n');
+});

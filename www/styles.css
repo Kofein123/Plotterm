@@ -226,6 +226,8 @@ select { width: 100%; max-width: 100%; }
 .editor-head { display: flex; align-items: center; gap: 10px; }
 .big-char { font-size: 30px; font-weight: 600; width: 40px; text-align: center; }
 .glyph-canvas { width: 100%; border: 1px solid var(--line-strong); border-radius: 10px; touch-action: none; cursor: crosshair; background: var(--paper); }
+.corner-pick { display: flex; flex-direction: column; gap: 8px; }
+.corner-canvas { width: 100%; height: auto; border: 1px solid var(--line-strong); border-radius: 10px; touch-action: none; cursor: crosshair; }
 .variants { display: flex; flex-wrap: wrap; gap: 6px; }
 .variant { display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); }
 

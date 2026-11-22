@@ -2,7 +2,7 @@ import { h } from '../dom.ts';
 import { app } from '../../app/state.ts';
 import { SPEED_PROFILES, feedOf } from '../../core/types.ts';
 import { Btn, Field, NumInput, Note, Section, Segmented, Toggle, bind } from '../components.tsx';
-import { measurePenLift, printPattern, writeSetting } from '../../app/actions.ts';
+import { measurePenLift, printPattern, speedUpAll, writeSetting } from '../../app/actions.ts';
 import { fmtTime } from '../../app/notify.ts';
 
 /** Куда уходит время текущей страницы: письмо / подъёмы ручки / переезды. */
@@ -73,7 +73,23 @@ export function PenTab() {
       </Section>
       <Section title="Быстрее">
         <TimeBreakdown />
-        <Field label="Низкий подъём между буквами" hint="внутри строки на короткий переезд ручка поднимается невысоко — это главный выигрыш по времени; 0 — выкл.">
+        <div class="row wrap">
+          <Btn kind="primary" onClick={() => { void speedUpAll(); }} disabled={() => app.job.active}>Настроить на быстро</Btn>
+          <span class="muted small">
+            Разом: скорость 6000 мм/мин, низкий подъём 2 мм, опускание на полной скорости, упрощение линий — и, если плоттер на связи,
+            ускорение платы $120/$121 = 600 и $11 = 0,05 (с копией настроек и подтверждением).
+          </span>
+        </div>
+        {() => {
+          const up = Math.abs(app.calib.value.upZ);
+          return app.calib.value.penSet && up > 5 ? (
+            <Note kind="warn">
+              Ручка поднимается на {up.toFixed(1)} мм — на каждый подъём уходит лишнее время. Хватает 3 мм: «Калибровка», шаг 1, поднимите
+              ручку на 3 мм над бумагой и нажмите «Ручка поднята». Страница станет писаться в 2–3 раза быстрее.
+            </Note>
+          ) : null;
+        }}
+        <Field label="Низкий подъём между буквами" hint="внутри строки на короткий переезд ручка поднимается невысоко — быстрее; 0 — выкл. Ручке на пружине нужно 2 мм и больше, иначе между словами тянется линия">
           <NumInput value={bind(pen, 'hopLift').get} onChange={(v) => pen.patch({ hopLift: v === 0 ? 0 : Math.max(0.3, v) })} min={0} max={5} step={0.1} unit="мм" />
         </Field>
         <Field label="Короткий переезд — до">
@@ -89,6 +105,32 @@ export function PenTab() {
               Повороты: у платы $11 = {jv} мм — на каждом изгибе буквы она почти останавливается. Значение 0,05 заметно ускоряет
               письмо без потери точности для ручки.{' '}
               <Btn small kind="primary" onClick={() => writeSetting(11, '0.050')}>Записать $11=0.05</Btn>
+            </Note>
+          ) : null;
+        }}
+        {() => {
+          const m = app.machine;
+          const acc = [120, 121].map((k) => parseFloat(m.settings.value.get(k) ?? ''));
+          const low = acc.filter((v) => Number.isFinite(v) && v < 400);
+          return low.length ? (
+            <Note kind="info">
+              Ускорение платы $120/$121 = {acc.map((v) => (Number.isFinite(v) ? v : '?')).join(' / ')} мм/с². На каждой букве каретка
+              разгоняется и тормозит, поэтому с таким ускорением высокая скорость письма почти не даёт выигрыша. Для лёгкой каретки с
+              ручкой обычно спокойно идёт 600.{' '}
+              <Btn small kind="primary" onClick={() => { void writeSetting(120, '600'); }}>$120=600</Btn>{' '}
+              <Btn small kind="primary" onClick={() => { void writeSetting(121, '600'); }}>$121=600</Btn>{' '}
+              Если после этого пропускаются шаги или буквы «съезжают» — верните прежнее значение (копия настроек скачивается перед записью).
+            </Note>
+          ) : null;
+        }}
+        {() => {
+          const m = app.machine;
+          const rate = [110, 111].map((k) => parseFloat(m.settings.value.get(k) ?? ''));
+          const lim = Math.min(...rate.filter((v) => Number.isFinite(v)));
+          return Number.isFinite(lim) && lim < feedOf(app.speed.value) ? (
+            <Note kind="warn">
+              Плата не даст ехать быстрее {lim} мм/мин ($110/$111), какую бы скорость письма вы ни выбрали. Поднять предел можно на
+              вкладке «Ещё» → настройки платы, но только до того, как мотор начнёт пропускать шаги.
             </Note>
           ) : null;
         }}

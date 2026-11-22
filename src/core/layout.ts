@@ -4,8 +4,9 @@ import { resolveGlyph } from '../fonts/fonts.ts';
 import { parseMarkup, type CharItem } from './markup.ts';
 import { hyphenPoints } from './hyphen.ts';
 import { rng, type Rng } from './rng.ts';
-import { connector, isHighExit } from './cursive.ts';
-import type { LayoutResult, PageLayout, PaperSettings, Stroke, TypographySettings } from './types.ts';
+import { connector, strokeTangent, trimEnd, trimStart } from './cursive.ts';
+import type { VectorDrawing } from '../io/vectorize.ts';
+import type { LayoutResult, LayoutTrace, PageLayout, PaperSettings, Stroke, TypographySettings } from './types.ts';
 
 export interface LayoutInput {
   text: string;
@@ -14,6 +15,10 @@ export interface LayoutInput {
   paper: PaperSettings;
   /** узел сетки / линия линейки (бумажные координаты) из калибровки */
   gridOrigin?: [number, number] | null;
+  /** рисунки по id из разметки `![подпись](img:ID)`: линии в долях ширины */
+  images?: Record<string, VectorDrawing>;
+  /** собрать трассу вёрстки (каждая буква и каждый связный штрих) — для метрик качества */
+  trace?: boolean;
 }
 
 const SCRIPT_SCALE = 0.62;
@@ -71,8 +76,54 @@ export function layoutText(inp: LayoutInput): LayoutResult {
   const lastVariant = new Map<string, number>();
   const slantK = Math.tan((typo.slant * Math.PI) / 180);
   const cursive = typo.cursive !== false;
+  const joinTrim = typo.xHeight * 0.18;
+  const joinProbe = Math.max(0.2, typo.xHeight * 0.12);
+  const trace: LayoutTrace | undefined = inp.trace ? { glyphs: [], runs: [] } : undefined;
 
-  const charWidth = (it: CharItem) => {
+  // --- формулы: дробь столбиком и корень с чертой (размеры в мм при масштабе sc) ---
+  const FRAC_SCALE = 0.8;
+  const fracPad = (sc: number) => typo.xHeight * 0.18 * sc;
+  const rootW = (sc: number) => typo.xHeight * 0.9 * sc;
+  const runWidth = (items: CharItem[], sc: number): number =>
+    items.reduce((a, it) => a + (it.ch === ' ' && !it.script ? spaceW * 0.6 * sc : itemWidth(it, sc)), 0);
+  /** высота над базовой линией и глубина под ней, мм */
+  const runExtent = (items: CharItem[], sc: number): [number, number] => {
+    let up = typo.xHeight * sc, down = 0;
+    for (const it of items) {
+      const [u, d] = itemExtent(it, sc);
+      up = Math.max(up, u);
+      down = Math.max(down, d);
+    }
+    return [up, down];
+  };
+  const fracAxis = (sc: number) => typo.xHeight * 0.5 * sc;
+  function itemExtent(it: CharItem, sc: number): [number, number] {
+    if (it.frac) {
+      const fs = sc * FRAC_SCALE;
+      const [nu] = runExtent(it.frac.num, fs);
+      const [du, dd] = runExtent(it.frac.den, fs);
+      const gap = typo.xHeight * 0.32 * sc;
+      return [fracAxis(sc) + gap + nu, -fracAxis(sc) + gap + du + dd];
+    }
+    if (it.sqrt) {
+      const [u, d] = runExtent(it.sqrt, sc);
+      return [u + typo.xHeight * 0.35 * sc, d];
+    }
+    const k = it.script ? SCRIPT_SCALE : 1;
+    const up = (it.script === 1 ? typo.xHeight * 0.55 : 0) + capMm * k;
+    return [up * sc, (it.script === -1 ? typo.xHeight * 0.3 + descMm * 0.4 * k : descMm * 0.4) * sc];
+  }
+  function itemWidth(it: CharItem, sc: number): number {
+    if (it.frac) {
+      const fs = sc * FRAC_SCALE;
+      return Math.max(runWidth(it.frac.num, fs), runWidth(it.frac.den, fs)) + fracPad(sc) * 2 + letterGap * sc;
+    }
+    if (it.sqrt) return rootW(sc) + runWidth(it.sqrt, sc) + typo.xHeight * 0.25 * sc + letterGap * sc;
+    return charWidth(it) * sc;
+  }
+
+  const charWidth = (it: CharItem): number => {
+    if (it.frac || it.sqrt) return itemWidth(it, 1);
     const g = resolveGlyph(font, it.ch);
     if (g.missing) missing.add(it.ch);
     const sc = it.script ? SCRIPT_SCALE : 1;
@@ -86,7 +137,20 @@ export function layoutText(inp: LayoutInput): LayoutResult {
   const baselines = pageBaselines(paper, capMm, descMm, inp.gridOrigin);
   const pages: PageLayout[] = [];
   const marginsFor = (pi: number) => {
-    const mirrored = paper.side === 'left' || (paper.side === 'alternate' && pi % 2 === 1);
+    // разворот: страницы идут не одна за другой по листам, а по половинам одного листа —
+    // чётная слева, нечётная справа, поля у правой половины зеркальные (красная линия снаружи)
+    if (paper.spread) {
+      const half = paper.width / 2;
+      // широкое поле (с красной линией) — у внешнего края разворота, как в тетради
+      const wide = Math.max(paper.marginLeft, paper.marginRight);
+      const narrow = Math.min(paper.marginLeft, paper.marginRight);
+      return pi % 2 === 1
+        ? { left: half + narrow, right: paper.width - wide, mirrored: paper.marginLeft > paper.marginRight }
+        : { left: wide, right: half - narrow, mirrored: paper.marginLeft < paper.marginRight };
+    }
+    // чередование: по умолчанию первая страница правая, но тетрадь могли начать и с левой
+    const altLeft = paper.leftFirst ? pi % 2 === 0 : pi % 2 === 1;
+    const mirrored = paper.side === 'left' || (paper.side === 'alternate' && altLeft);
     return mirrored
       ? { left: paper.marginRight, right: paper.width - paper.marginLeft, mirrored }
       : { left: paper.marginLeft, right: paper.width - paper.marginRight, mirrored };
@@ -94,9 +158,12 @@ export function layoutText(inp: LayoutInput): LayoutResult {
 
   let page: PageLayout | null = null;
   let slot = 0;
+  // глубина последней строки под базовой линией (для строк с дробями) и её номер
+  let prevDown = 0;
+  let prevSlot = -10;
   const newPage = () => {
     const m = marginsFor(pages.length);
-    page = { index: pages.length, strokes: [], usedLines: 0, totalLines: baselines.length, mirrored: m.mirrored, baselines };
+    page = { index: pages.length, strokes: [], usedLines: 0, totalLines: baselines.length, mirrored: m.mirrored, baselines, images: [] };
     pages.push(page);
     slot = pages.length === 1 ? Math.max(0, Math.min(baselines.length - 1, paper.startLine - 1)) : 0;
     page.usedLines = slot;
@@ -112,13 +179,26 @@ export function layoutText(inp: LayoutInput): LayoutResult {
   if (!baselines.length) return { pages: [], missingChars: [], chars: 0 };
 
   const paragraphs = parseMarkup(inp.text);
-  for (const para of paragraphs) {
+  for (let pi = 0; pi < paragraphs.length; pi++) {
+    const para = paragraphs[pi];
+    if (para.kind === 'row') {
+      const rows: CharItem[][][] = [];
+      while (pi < paragraphs.length && paragraphs[pi].kind === 'row') rows.push((paragraphs[pi++] as { cells: CharItem[][] }).cells);
+      pi--;
+      placeTable(rows);
+      continue;
+    }
     if (para.kind === 'page') {
       if (page) slot = baselines.length; // следующая строка начнёт новую страницу
       continue;
     }
     if (para.kind === 'blank') {
-      takeSlot();
+      // «Пустая строка между абзацами» выключена — абзацы идут подряд, страниц уходит меньше
+      if (typo.paraGap !== false) takeSlot();
+      continue;
+    }
+    if (para.kind === 'image') {
+      placeImage(para.id, para.width, para.tool);
       continue;
     }
     // слова
@@ -199,9 +279,16 @@ export function layoutText(inp: LayoutInput): LayoutResult {
     if (line.words.length) lines.push(line);
     if (lines.length) lines[lines.length - 1].lastOfPara = true;
 
-    // размещение
+    // размещение; строке с дробями нужно больше места по высоте — если она заденет соседнюю, пропускаем строку
+    const pitch = baselines.length > 1 ? baselines[1] - baselines[0] : 10;
     for (const lb of lines) {
+      const [up, down] = runExtent(lb.words.flat().map((c) => c.item), 1);
+      if (up > capMm + 0.3 || prevDown > descMm * 0.4 + 0.3) {
+        if (page && slot > 0 && slot < baselines.length && prevSlot === slot - 1 && prevDown + up > pitch - 0.4) takeSlot();
+      }
       const { page: pg, slot: sl } = takeSlot();
+      prevDown = down;
+      prevSlot = sl;
       const m = marginsFor(pg.index);
       const width = m.right - m.left - Math.max(0, capMm * slantK);
       const indent = lb.firstOfPara && !lb.heading ? typo.indent : 0;
@@ -215,6 +302,144 @@ export function layoutText(inp: LayoutInput): LayoutResult {
       }
       renderLine(pg, sl, x, gap, lb.words);
     }
+  }
+
+  function toWords(items: CharItem[]): Word[] {
+    const words: Word[] = [];
+    let cur: Word = [];
+    for (const it of items) {
+      if (it.ch === ' ' && it.script === 0) {
+        if (cur.length) words.push(cur);
+        cur = [];
+      } else {
+        cur.push({ item: it, w: charWidth(it) });
+        charCount++;
+      }
+    }
+    if (cur.length) words.push(cur);
+    return words;
+  }
+
+  /** Жадная разбивка слов ячейки на строки; слишком длинное слово режется по буквам. */
+  function breakWords(words: Word[], width: number): Word[][] {
+    const out: Word[][] = [];
+    let line: Word[] = [];
+    let lw = 0;
+    const ww = (w: Word) => w.reduce((a, c) => a + c.w, 0);
+    const queue = [...words];
+    while (queue.length) {
+      const w = queue.shift()!;
+      const need = (line.length ? spaceW : 0) + ww(w);
+      if (lw + need <= width + 1e-6) { line.push(w); lw += need; continue; }
+      if (line.length) { out.push(line); line = []; lw = 0; queue.unshift(w); continue; }
+      let acc = 0, cut = 0;
+      while (cut < w.length && acc + w[cut].w <= width) acc += w[cut++].w;
+      cut = Math.max(1, cut);
+      out.push([w.slice(0, cut)]);
+      if (cut < w.length) queue.unshift(w.slice(cut));
+    }
+    if (line.length) out.push(line);
+    return out.length ? out : [[]];
+  }
+
+  /** Линия от руки: чуть неровная, как по линейке без линейки. */
+  function handLine(pg: PageLayout, x0: number, y0: number, x1: number, y1: number) {
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    const n = Math.max(2, Math.ceil(len / 6));
+    const wob = 0.12 * live;
+    const ph = r.next() * Math.PI * 2;
+    const pts: number[] = [];
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      const off = wob * Math.sin(t * Math.PI * 2 * Math.max(1, len / 60) + ph) * Math.sin(t * Math.PI);
+      pts.push(x0 + (x1 - x0) * t - ((y1 - y0) / (len || 1)) * off, y0 + (y1 - y0) * t + ((x1 - x0) / (len || 1)) * off);
+    }
+    pg.strokes.push({ pts, line: 0 });
+  }
+
+  /** Таблица на всю ширину строки: рамка от руки, текст в ячейках переносится, ряды не разрываются между страницами. */
+  function placeTable(rows: CharItem[][][]) {
+    const step = baselines.length > 1 ? baselines[1] - baselines[0] : Math.max(capMm * 2, 5);
+    const nCol = Math.max(...rows.map((r) => r.length));
+    const cellWords = rows.map((r) => Array.from({ length: nCol }, (_, j) => toWords(r[j] ?? [])));
+    const pad = Math.max(1, typo.xHeight * 0.5);
+    const m0 = marginsFor(page ? page.index : 0);
+    const full = m0.right - m0.left;
+    // ширина колонки — по самому длинному тексту, но узкие не меньше 12 % и широкие делят остаток
+    const nat = Array.from({ length: nCol }, (_, j) =>
+      Math.max(...cellWords.map((cw) => cw[j].reduce((a, w) => a + w.reduce((b, c) => b + c.w, 0), 0) + spaceW * Math.max(0, cw[j].length - 1))) + pad * 2,
+    );
+    // колонка не уже самого длинного слова в ней — иначе слова рвутся по буквам
+    const longest = Array.from({ length: nCol }, (_, j) => Math.max(0, ...cellWords.flatMap((cw) => cw[j].map((w) => w.reduce((b, c) => b + c.w, 0))))) ;
+    const minW = longest.map((l) => Math.min(full * 0.45, Math.max(full * 0.12, l + pad * 2)));
+    let widths = nat.map((w, j) => Math.max(minW[j], w));
+    const sum = widths.reduce((a, b) => a + b, 0);
+    if (sum > full) {
+      // ужимаем только широкие колонки
+      // ужимаем до длинного слова: сначала самые широкие колонки, пропорционально запасу
+      const slack = widths.map((w, j) => w - minW[j]);
+      const totalSlack = slack.reduce((a, b) => a + b, 0);
+      const over = sum - full;
+      widths = widths.map((w, j) => (totalSlack > 0 ? w - (over * slack[j]) / totalSlack : (w * full) / sum));
+    } else widths = widths.map((w) => (w * full) / sum);
+    const top = (sl: number) => baselines[sl] - step * 0.72;
+    let first = true;
+    for (const cw of cellWords) {
+      const lines = cw.map((words, j) => breakWords(words, widths[j] - pad * 2));
+      const need = Math.max(1, ...lines.map((l) => l.length));
+      if (!page || slot + need > baselines.length) { newPage(); first = true; }
+      const pg = page!;
+      const m = marginsFor(pg.index);
+      const y0 = top(slot);
+      const y1 = top(slot) + need * step;
+      if (first) handLine(pg, m.left, y0, m.left + full, y0);
+      first = false;
+      let x = m.left;
+      for (let j = 0; j < nCol; j++) {
+        lines[j].forEach((ln, k) => { if (ln.length) renderLine(pg, slot + k, x + pad, spaceW, ln); });
+        x += widths[j];
+      }
+      handLine(pg, m.left, y1, m.left + full, y1);
+      x = m.left;
+      for (let j = 0; j <= nCol; j++) {
+        handLine(pg, x, y0, x, y1);
+        x += widths[j] ?? 0;
+      }
+      slot += need;
+      pg.usedLines = slot;
+    }
+  }
+
+  /** Рисунок на всю ширину строки: занимает целые строки страницы, не помещается — переходит на следующую. */
+  function placeImage(id: string, frac: number, tool: 'pen' | 'pencil' | 'space') {
+    const d = inp.images?.[id];
+    const aspect = d?.aspect ?? 0.6;
+    const step = baselines.length > 1 ? baselines[1] - baselines[0] : Math.max(capMm * 2, 5);
+    const m0 = marginsFor(page ? page.index : 0);
+    const full = m0.right - m0.left;
+    let w = full * frac;
+    let h = w * aspect;
+    const pageH = step * baselines.length;
+    if (h > pageH * 0.92) { h = pageH * 0.92; w = h / aspect; }
+    const lines = Math.max(1, Math.ceil(h / step + 0.4));
+    if (!page || slot + lines > baselines.length) newPage();
+    const pg = page!;
+    const m = marginsFor(pg.index);
+    const top = baselines[slot] - step + (lines * step - h) / 2;
+    const left = m.left + (m.right - m.left - w) / 2;
+    if (d && tool !== 'space') {
+      for (const p of d.paths) {
+        const pts: number[] = new Array(p.length);
+        for (let i = 0; i < p.length; i += 2) {
+          pts[i] = left + p[i] * w;
+          pts[i + 1] = top + p[i + 1] * w;
+        }
+        pg.strokes.push(tool === 'pencil' ? { pts, line: 0, tool: 'pencil' } : { pts, line: 0 });
+      }
+    }
+    pg.images.push({ id, u: left, v: top, w, h, tool });
+    slot += lines;
+    pg.usedLines = slot;
   }
 
   function renderLine(pg: PageLayout, sl: number, x0: number, gap: number, words: Word[]) {
@@ -243,21 +468,53 @@ export function layoutText(inp: LayoutInput): LayoutResult {
     words.forEach((w, wi) => {
       // связное письмо: копим один непрерывный штрих на слово
       let run: number[] = [];
-      let prev: { x: number; y: number; high: boolean } | null = null;
+      let joints: number[] = [];
+      let prev: { x: number; y: number; t: [number, number] } | null = null;
+      let prevStart = 0;
       const flushRun = () => {
-        if (run.length >= 4) pg.strokes.push({ pts: run, line: lineNo });
+        if (run.length >= 4) {
+          pg.strokes.push({ pts: run, line: lineNo });
+          if (trace && joints.length) trace.runs.push({ page: pg.index, pts: run, joints });
+        }
         run = [];
+        joints = [];
         prev = null;
       };
       for (const c of w) {
         if (c.item.underline && ulStart === null) ulStart = x;
         if (!c.item.underline) flushUnderline(x);
+        if (c.item.frac || c.item.sqrt) {
+          flushRun();
+          for (const st of renderMath(c.item, x, baseline, drift, 1)) pg.strokes.push({ pts: st, line: lineNo });
+          x += c.w;
+          continue;
+        }
         const out = renderChar(c, x, baseline, drift, r);
+        if (trace && out.strokes.length) trace.glyphs.push({ ch: c.item.ch, page: pg.index, strokes: out.strokes });
         const joinable = cursive && out.aIn !== null && out.aOut !== null && !c.item.script;
         if (joinable) {
-          if (prev !== null && run.length) run.push(...connector(prev, out.aIn!, prev.high));
-          run.push(...out.strokes[0]);
-          for (let i = 1; i < out.strokes.length; i++) pg.strokes.push({ pts: out.strokes[i], line: lineNo });
+          let main = out.strokes[0];
+          if (prev !== null && run.length) {
+            // концы букв у стыка срезаем: связке нужен разгон, чтобы плавно повернуть из одной буквы в другую
+            const keep = Math.max(prevStart + 4, trimEnd(run, joinTrim));
+            run.length = keep;
+            main = main.slice(trimStart(main, joinTrim));
+            joints.push(run.length / 2 - 1);
+            const from = { x: run[run.length - 2], y: run[run.length - 1] };
+            const tOut = strokeTangent(run, true, joinProbe) ?? [1, 0];
+            const tIn = strokeTangent(main, false, joinProbe) ?? [1, 0];
+            run.push(...connector(from, { x: main[0], y: main[1] }, tOut, tIn));
+            joints.push(run.length / 2);
+          }
+          prevStart = run.length;
+          run.push(...main);
+          for (let i = 1; i < out.strokes.length; i++) if (i !== out.oi) pg.strokes.push({ pts: out.strokes[i], line: lineNo });
+          if (out.oi) {
+            // выход из буквы — другой штрих (хвостик): он начинает следующий связный штрих
+            flushRun();
+            prevStart = 0;
+            run.push(...out.strokes[out.oi]);
+          }
           prev = out.aOut;
         } else {
           flushRun();
@@ -275,7 +532,64 @@ export function layoutText(inp: LayoutInput): LayoutResult {
     flushUnderline(x - letterGap);
   }
 
-  function renderChar(c: Measured, x: number, baseline: number, drift: (u: number) => number, rr: Rng) {
+  /** Линия формулы (черта дроби, корень): чуть неровная, как от руки. */
+  function mathLine(pts: [number, number][], drift: (u: number) => number): number[] {
+    const out: number[] = [];
+    for (let i = 0; i < pts.length; i++) {
+      const [u, v] = pts[i];
+      if (i) {
+        const [pu, pv] = pts[i - 1];
+        const n = Math.max(1, Math.ceil(Math.hypot(u - pu, v - pv) / 3));
+        for (let j = 1; j < n; j++) {
+          const t = j / n, uu = pu + (u - pu) * t;
+          out.push(uu, pv + (v - pv) * t + drift(uu) + r.sym() * 0.06 * live);
+        }
+      }
+      out.push(u, v + drift(u));
+    }
+    return out;
+  }
+
+  /** Строка формулы в масштабе sc: буквы, вложенные дроби и корни. */
+  function renderRun(items: CharItem[], x: number, baseline: number, drift: (u: number) => number, sc: number): number[][] {
+    const out: number[][] = [];
+    for (const it of items) {
+      if (it.ch === ' ' && !it.script) { x += spaceW * 0.6 * sc; continue; }
+      if (it.frac || it.sqrt) out.push(...renderMath(it, x, baseline, drift, sc));
+      else out.push(...renderChar({ item: it, w: 0 }, x, baseline, drift, r, sc).strokes);
+      x += itemWidth(it, sc);
+    }
+    return out;
+  }
+
+  function renderMath(it: CharItem, x: number, baseline: number, drift: (u: number) => number, sc: number): number[][] {
+    const out: number[][] = [];
+    if (it.frac) {
+      const fs = sc * FRAC_SCALE;
+      const w = itemWidth(it, sc) - letterGap * sc;
+      const nw = runWidth(it.frac.num, fs), dw = runWidth(it.frac.den, fs);
+      const axisY = baseline - fracAxis(sc);
+      const gap = typo.xHeight * 0.32 * sc;
+      const [, nd] = runExtent(it.frac.num, fs);
+      const [du] = runExtent(it.frac.den, fs);
+      out.push(...renderRun(it.frac.num, x + (w - nw) / 2, axisY - gap - nd * 0.6, drift, fs));
+      out.push(...renderRun(it.frac.den, x + (w - dw) / 2, axisY + gap + du, drift, fs));
+      const tilt = r.sym() * 0.12 * live;
+      out.push(mathLine([[x + fracPad(sc) * 0.3, axisY - tilt], [x + w - fracPad(sc) * 0.3, axisY + tilt]], drift));
+    } else if (it.sqrt) {
+      const h0 = typo.xHeight * sc;
+      const [up, down] = runExtent(it.sqrt, sc);
+      const top = baseline - up - h0 * 0.3;
+      const bottom = baseline + Math.min(down, h0 * 0.3) * 0.5;
+      const cw = runWidth(it.sqrt, sc);
+      const rw = rootW(sc);
+      out.push(mathLine([[x, baseline - h0 * 0.45], [x + rw * 0.18, baseline - h0 * 0.55], [x + rw * 0.45, bottom], [x + rw * 0.85, top], [x + rw + cw + h0 * 0.15, top]], drift));
+      out.push(...renderRun(it.sqrt, x + rw, baseline, drift, sc));
+    }
+    return out;
+  }
+
+  function renderChar(c: Measured, x: number, baseline: number, drift: (u: number) => number, rr: Rng, extra = 1) {
     const first = resolveGlyph(font, c.item.ch);
     let variant = 0;
     if (first.variants > 1) {
@@ -284,11 +598,11 @@ export function layoutText(inp: LayoutInput): LayoutResult {
       lastVariant.set(c.item.ch, variant);
     }
     const g = variant ? resolveGlyph(font, c.item.ch, variant) : first;
-    const sc = (c.item.script ? SCRIPT_SCALE : 1) * (1 + rr.sym() * 0.05 * live);
+    const sc = (c.item.script ? SCRIPT_SCALE : 1) * (1 + rr.sym() * 0.05 * live) * extra;
     const rot = ((rr.sym() * 3 * Math.PI) / 180) * live;
     const dx = rr.sym() * 0.3 * live;
     const dy = rr.sym() * 0.15 * live;
-    const scriptDy = c.item.script === 1 ? typo.xHeight * 0.55 : c.item.script === -1 ? -typo.xHeight * 0.3 : 0;
+    const scriptDy = (c.item.script === 1 ? typo.xHeight * 0.55 : c.item.script === -1 ? -typo.xHeight * 0.3 : 0) * extra;
     const k = g.k * s * sc;
     const cx = (g.glyph.w * k) / 2;
     const cy = (typo.xHeight * sc) / 2;
@@ -315,18 +629,21 @@ export function layoutText(inp: LayoutInput): LayoutResult {
       }
       strokes.push(pts);
     }
-    let aIn: { x: number; y: number; high: boolean } | null = null;
-    let aOut: { x: number; y: number; high: boolean } | null = null;
+    // связка идёт от настоящего конца главного штриха к настоящему началу следующего:
+    // i/o шрифта лишь говорят, что буква соединяется, и могут стоять в стороне от штриха
+    let aIn: { x: number; y: number; t: [number, number] } | null = null;
+    let aOut: { x: number; y: number; t: [number, number] } | null = null;
+    const oi = g.glyph.oi && g.glyph.oi < strokes.length ? g.glyph.oi : 0;
     if (g.glyph.i && g.glyph.o && strokes.length) {
-      const pi = tp(g.glyph.i[0], g.glyph.i[1]);
-      const po = tp(g.glyph.o[0], g.glyph.o[1]);
-      aIn = { x: pi[0], y: pi[1], high: isHighExit(g.glyph.i[1], font.xHeight) };
-      aOut = { x: po[0], y: po[1], high: isHighExit(g.glyph.o[1], font.xHeight) };
+      const m = strokes[0];
+      const e = strokes[oi];
+      aIn = { x: m[0], y: m[1], t: [1, 0] };
+      aOut = { x: e[e.length - 2], y: e[e.length - 1], t: [1, 0] };
     }
-    return { strokes, aIn, aOut };
+    return { strokes, aIn, aOut, oi };
   }
 
-  return { pages, missingChars: [...missing], chars: charCount };
+  return { pages, missingChars: [...missing], chars: charCount, trace };
 }
 
 /** Габариты набора штрихов. */

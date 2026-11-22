@@ -18,13 +18,24 @@ export interface OutlineImportProgress {
   (done: number, total: number): void;
 }
 
+import { repairSfnt } from './fontrepair.ts';
+
 export async function importOutlineFont(file: File, onProgress?: OutlineImportProgress): Promise<CustomFontRecord> {
   const fam = 'plt_import_' + Date.now().toString(36);
-  const face = new FontFace(fam, await file.arrayBuffer());
+  const data = await file.arrayBuffer();
+  let face = new FontFace(fam, data);
   try {
     await face.load();
   } catch {
-    throw new Error('браузер не смог прочитать шрифт (нужен .ttf, .otf, .woff или .woff2)');
+    // старый шрифт с ошибками в заголовке — чиним служебные поля и пробуем ещё раз
+    const fixed = repairSfnt(data);
+    face = new FontFace(fam, fixed ?? data);
+    try {
+      if (!fixed) throw new Error();
+      await face.load();
+    } catch {
+      throw new Error('браузер не смог прочитать шрифт (нужен .ttf, .otf, .woff или .woff2)');
+    }
   }
   (document.fonts as any).add(face);
   try {
@@ -151,7 +162,9 @@ export function thin(img: Uint8Array, W: number, H: number) {
           const p2 = at(x, y - 1), p3 = at(x + 1, y - 1), p4 = at(x + 1, y), p5 = at(x + 1, y + 1);
           const p6 = at(x, y + 1), p7 = at(x - 1, y + 1), p8 = at(x - 1, y), p9 = at(x - 1, y - 1);
           const b = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
-          if (b < 2 || b > 6) continue;
+          // b ≥ 3, а не 2 (поправка Лю — Ванга): иначе диагональ толщиной 2 пикселя стирается целиком —
+          // так пропадала верхняя ветка «к» в крупной клетке
+          if (b < 3 || b > 6) continue;
           const seq = [p2, p3, p4, p5, p6, p7, p8, p9, p2];
           let a = 0;
           for (let i = 0; i < 8; i++) if (!seq[i] && seq[i + 1]) a++;
@@ -300,6 +313,8 @@ function manhattan(a: number, b: number, W: number) {
 
 /** Склеить отрезки, которые сходятся в одной точке почти по прямой: меньше подъёмов ручки. */
 function mergeAtJunctions(paths: number[][]): number[][] {
+  // у рисунка тысячи отрезков — перебор «каждый с каждым» там слишком долгий
+  if (paths.length > 150) return mergeAtJunctionsFast(paths);
   const out = paths.map((p) => p.slice());
   let merged = true;
   const close = (ax: number, ay: number, bx: number, by: number) => Math.abs(ax - bx) <= 1.5 && Math.abs(ay - by) <= 1.5;
@@ -331,6 +346,61 @@ function mergeAtJunctions(paths: number[][]): number[][] {
   return out;
 }
 
+/** То же для больших рисунков: концы в сетке, каждый штрих продлеваем, пока есть продолжение почти по прямой. */
+function mergeAtJunctionsFast(paths: number[][]): number[][] {
+  const alive = paths.map((p) => p.slice());
+  const dead = new Uint8Array(alive.length);
+  const grid = new Map<number, number[]>();
+  const key = (x: number, y: number) => Math.round(x / 2) * 100003 + Math.round(y / 2);
+  const add = (i: number) => {
+    const p = alive[i];
+    for (const [x, y] of [[p[0], p[1]], [p[p.length - 2], p[p.length - 1]]]) {
+      const k = key(x, y);
+      const l = grid.get(k);
+      if (l) l.push(i);
+      else grid.set(k, [i]);
+    }
+  };
+  alive.forEach((_, i) => add(i));
+  const near = (x: number, y: number) => {
+    const out: number[] = [];
+    const cx = Math.round(x / 2), cy = Math.round(y / 2);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (const i of grid.get((cx + dx) * 100003 + cy + dy) ?? []) out.push(i);
+    return out;
+  };
+  const close = (ax: number, ay: number, bx: number, by: number) => Math.abs(ax - bx) <= 1.5 && Math.abs(ay - by) <= 1.5;
+  for (let i = 0; i < alive.length; i++) {
+    if (dead[i]) continue;
+    let grown = true;
+    while (grown) {
+      grown = false;
+      const a = alive[i];
+      const ex = a[a.length - 2], ey = a[a.length - 1];
+      const n1 = Math.max(0, a.length - 10);
+      const d1 = [ex - a[n1], ey - a[n1 + 1]];
+      for (const j of near(ex, ey)) {
+        if (j === i || dead[j]) continue;
+        const b = alive[j];
+        for (const rev of [false, true]) {
+          const bb = rev ? reverse(b) : b;
+          if (!close(ex, ey, bb[0], bb[1])) continue;
+          const m2 = Math.min(bb.length - 2, 8);
+          const d2 = [bb[m2] - bb[0], bb[m2 + 1] - bb[1]];
+          const cos = (d1[0] * d2[0] + d1[1] * d2[1]) / (Math.hypot(d1[0], d1[1]) * Math.hypot(d2[0], d2[1]) || 1);
+          if (cos < 0.5) continue;
+          alive[i] = a.concat(bb.slice(2));
+          dead[j] = 1;
+          add(i);
+          grown = true;
+          break;
+        }
+        if (grown) break;
+      }
+    }
+  }
+  return alive.filter((_, i) => !dead[i]);
+}
+
 function reverse(p: number[]) {
   const r: number[] = [];
   for (let i = p.length - 2; i >= 0; i -= 2) r.push(p[i], p[i + 1]);
@@ -338,7 +408,7 @@ function reverse(p: number[]) {
 }
 
 /** Сглаживание скользящим средним (концы на месте): убирает «лесенку» пикселей. */
-function smooth(p: number[]): number[] {
+export function smooth(p: number[]): number[] {
   const n = p.length / 2;
   if (n < 5) return p;
   const out = p.slice();

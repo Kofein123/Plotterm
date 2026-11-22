@@ -1,13 +1,37 @@
 import { h } from "../dom.js";
-import { app, SAMPLE_TEXT } from "../../app/state.js";
-import { Btn, Icon, Note, Section } from "../components.js";
+import { app, SAMPLE_TEXT, saveImages } from "../../app/state.js";
+import { docxToDocument, missingImages, pdfToDocument, pptxToDocument } from "../../io/document.js";
+import { vectorize } from "../../io/vectorize.js";
+import { signal } from "../reactive.js";
+import { imageFileToGray } from "../../io/image.js";
+import { Btn, Icon, Note, Section, Segmented } from "../components.js";
 import { readTextFile, svgToStrokes } from "../../io/importers.js";
+import { recognizeImage } from "../../io/ocr.js";
 import { pickFile, toast, fmtTime } from "../../app/notify.js";
 async function importText() {
-    const f = await pickFile('.txt,.md,.markdown,.docx,text/plain');
+    const f = await pickFile('.pdf,.docx,.pptx,.txt,.md,.markdown,text/plain,application/pdf');
     if (!f)
         return;
+    const name = f.name.toLowerCase();
     try {
+        if (name.endsWith('.pdf') || name.endsWith('.docx') || name.endsWith('.pptx')) {
+            toast(`Читаю «${f.name}»: текст и рисунки…`, 'info', 4000);
+            const buf = await f.arrayBuffer();
+            const d = name.endsWith('.pdf')
+                ? await pdfToDocument(buf, (m) => toast(m, 'info', 1500))
+                : name.endsWith('.pptx')
+                    ? await pptxToDocument(buf, (m) => toast(m, 'info', 1500))
+                    : await docxToDocument(buf, (m) => toast(m, 'info', 1500));
+            await saveImages(d.images.map((im) => ({ ...im, id: im.id })));
+            app.text.value = d.text;
+            app.source.value = { kind: 'text' };
+            app.currentPage.value = 0;
+            const marked = [...d.text.matchAll(/\(img:[\w-]+ (место|карандаш)\)/g)];
+            toast(`Загружено: ${f.name} · рисунков ${d.images.length}` +
+                (marked.length ? ` (из них ${marked.filter((m) => m[1] === 'место').length} — место под распечатку, ${marked.filter((m) => m[1] === 'карандаш').length} — карандашом)` : '') +
+                '. Проверьте текст и страницы в предпросмотре.', 'ok', 8000);
+            return;
+        }
         const t = await readTextFile(f);
         app.text.value = t;
         app.source.value = { kind: 'text' };
@@ -15,6 +39,83 @@ async function importText() {
     }
     catch (e) {
         toast('Не удалось прочитать файл: ' + (e?.message ?? e), 'err');
+    }
+}
+/** Картинка (фото схемы, скриншот) → линии; в текст вставляется строка-рисунок. */
+async function insertPicture(insert) {
+    const f = await pickFile('image/*,.svg');
+    if (!f)
+        return;
+    try {
+        const g = await imageFileToGray(f, 2400);
+        const d = vectorize(g, { mode: 'auto' });
+        if (!d.paths.length)
+            return toast('На картинке не нашлось линий.', 'warn');
+        const id = 'r' + Date.now().toString(36);
+        await saveImages([{ id, name: f.name, ...d }]);
+        insert(`\n![](img:${id})\n`);
+        toast(`Рисунок «${f.name}»: ${d.paths.length} линий, во всю ширину строки. В строке можно дописать «70%», «карандаш» или «место».`, 'ok', 8000);
+    }
+    catch (e) {
+        toast('Не удалось открыть картинку: ' + (e?.message ?? e), 'err');
+    }
+}
+/** Распознавание текста на картинке идёт долго — показываем это на самой кнопке. */
+const ocrBusy = signal(null);
+/** Скриншот или фото страницы → текст: плоттер напишет его почерком, а не обведёт как рисунок. */
+async function insertRecognized(insert) {
+    const f = await pickFile('image/*');
+    if (!f)
+        return;
+    ocrBusy.value = 'Готовлю распознаватель…';
+    try {
+        const text = await recognizeImage(f, { onProgress: (m) => (ocrBusy.value = m) });
+        if (!text.trim())
+            return toast('На картинке не нашлось текста. Если это схема, вставьте её кнопкой «+ рисунок».', 'warn', 8000);
+        insert('\n' + text.trim() + '\n');
+        toast(`Текст с «${f.name}» распознан: ${text.trim().length} знаков. Проверьте его глазами — распознавание ошибается в цифрах и формулах.`, 'ok', 9000);
+    }
+    catch (e) {
+        toast('Не удалось распознать: ' + (e?.message ?? e) + '. Нужен интернет: распознаватель загружается при первом запуске.', 'err', 9000);
+    }
+    finally {
+        ocrBusy.value = null;
+    }
+}
+const picMode = signal('auto');
+/** последняя загруженная картинка — чтобы пересчитать её при смене режима без повторного выбора файла */
+let lastPic = null;
+/** Рисунок (доли ширины) → штрихи в мм, вписанные в поля листа, по центру сверху. */
+function placeDrawing(d) {
+    const p = app.paper.peek();
+    const maxW = p.width - p.marginLeft - p.marginRight, maxH = p.height - p.marginTop - p.marginBottom;
+    const k = Math.min(maxW, maxH / Math.max(0.01, d.aspect));
+    const left = p.marginLeft + (maxW - k) / 2;
+    return d.paths.map((pts) => ({ pts: pts.map((v, i) => (i % 2 === 0 ? left + v * k : p.marginTop + v * k)), line: 0 }));
+}
+function showPicture() {
+    if (!lastPic)
+        return;
+    const d = vectorize(lastPic.g, { mode: picMode.peek() });
+    if (!d.paths.length)
+        return toast('На картинке не нашлось линий: попробуйте картинку контрастнее (тёмный рисунок на светлом фоне).', 'warn', 8000);
+    app.source.value = { kind: 'drawing', name: lastPic.name, strokes: placeDrawing(d) };
+    app.currentPage.value = 0;
+    return d.paths.length;
+}
+/** Обычная картинка (PNG, JPG, SVG…) → линии для ручки на весь лист. */
+export async function importPicture() {
+    const f = await pickFile('image/*,.svg');
+    if (!f)
+        return;
+    try {
+        lastPic = { name: f.name, g: await imageFileToGray(f, 2000) };
+        const n = showPicture();
+        if (n)
+            toast(`Картинка «${f.name}»: ${n} линий, вписана в поля. Если вышло не так — смените «Как рисовать» под кнопкой.`, 'ok', 8000);
+    }
+    catch (e) {
+        toast('Не удалось открыть картинку: ' + (e?.message ?? e), 'err');
     }
 }
 export async function importSvg() {
@@ -81,9 +182,9 @@ export function TextTab() {
             ' ',
             h("a", { href: "#", onClick: (e) => { e.preventDefault(); app.source.value = { kind: 'text' }; } }, "\u0412\u0435\u0440\u043D\u0443\u0442\u044C\u0441\u044F \u043A \u0442\u0435\u043A\u0441\u0442\u0443"))) : null,
         h(Section, { title: "\u0422\u0435\u043A\u0441\u0442 \u043A\u043E\u043D\u0441\u043F\u0435\u043A\u0442\u0430", aside: h("span", { class: "row" },
-                h(Btn, { small: true, kind: "ghost", onClick: () => importText(), title: ".txt, .md, .docx" },
+                h(Btn, { small: true, kind: "ghost", onClick: () => importText(), title: "PDF, Word (.docx), \u043F\u0440\u0435\u0437\u0435\u043D\u0442\u0430\u0446\u0438\u044F (.pptx), .txt, .md \u2014 \u0432\u043C\u0435\u0441\u0442\u0435 \u0441 \u0440\u0438\u0441\u0443\u043D\u043A\u0430\u043C\u0438" },
                     h(Icon, { name: "upload", size: 14 }),
-                    " \u0424\u0430\u0439\u043B")) },
+                    " \u0424\u0430\u0439\u043B \u043B\u0435\u043A\u0446\u0438\u0438")) },
             h("textarea", { class: "text-input", ref: (el) => (ta = el), spellcheck: true, lang: "ru", placeholder: "\u0412\u0441\u0442\u0430\u0432\u044C\u0442\u0435 \u0438\u043B\u0438 \u043D\u0430\u043F\u0435\u0447\u0430\u0442\u0430\u0439\u0442\u0435 \u0442\u0435\u043A\u0441\u0442\u2026", value: () => app.text.value, onInput: (e) => {
                     app.text.value = e.target.value;
                     if (app.source.peek().kind !== 'text')
@@ -93,14 +194,28 @@ export function TextTab() {
                 h("button", { class: "chip", title: "\u0417\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A \u043F\u043E \u0446\u0435\u043D\u0442\u0440\u0443", onClick: () => insert('# ') }, "# \u0417\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A"),
                 h("button", { class: "chip", title: "\u0421\u0442\u0435\u043F\u0435\u043D\u044C", onClick: () => insert('^{}') }, "x\u00B2"),
                 h("button", { class: "chip", title: "\u0418\u043D\u0434\u0435\u043A\u0441", onClick: () => insert('_{}') }, "x\u2081"),
-                h("button", { class: "chip", title: "\u041A\u043E\u0440\u0435\u043D\u044C", onClick: () => insert('√') }, "\u221A"),
+                h("button", { class: "chip", title: "\u041A\u043E\u0440\u0435\u043D\u044C \u0441 \u0447\u0435\u0440\u0442\u043E\u0439: \u221A(\u2026)", onClick: () => insert('√()') }, "\u221A"),
+                h("button", { class: "chip", title: "\u0414\u0440\u043E\u0431\u044C \u0441\u0442\u043E\u043B\u0431\u0438\u043A\u043E\u043C: (\u0447\u0438\u0441\u043B\u0438\u0442\u0435\u043B\u044C)/(\u0437\u043D\u0430\u043C\u0435\u043D\u0430\u0442\u0435\u043B\u044C). \u0412 \u0441\u0442\u0440\u043E\u043A\u0435 \u0441 \u00AB=\u00BB \u043B\u044E\u0431\u0430\u044F a/b \u043F\u0438\u0448\u0435\u0442\u0441\u044F \u0434\u0440\u043E\u0431\u044C\u044E; \u00AB\\/\u00BB \u2014 \u043F\u0440\u043E\u0441\u0442\u043E \u043A\u043E\u0441\u0430\u044F \u0447\u0435\u0440\u0442\u0430", onClick: () => insert('()/()') }, "a/b"),
                 h("button", { class: "chip", title: "\u041F\u043E\u0434\u0447\u0435\u0440\u043A\u043D\u0443\u0442\u044C", onClick: () => insert('____') }, "\u043F\u043E\u0434\u0447\u0435\u0440\u043A\u043D\u0443\u0442\u044C"),
-                h("button", { class: "chip", title: "\u041D\u043E\u0432\u0430\u044F \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0430", onClick: () => insert('\n===\n') }, "\u043D\u043E\u0432\u0430\u044F \u0441\u0442\u0440.")),
+                h("button", { class: "chip", title: "\u041D\u043E\u0432\u0430\u044F \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0430", onClick: () => insert('\n===\n') }, "\u043D\u043E\u0432\u0430\u044F \u0441\u0442\u0440."),
+                h("button", { class: "chip", title: "\u0420\u0438\u0441\u0443\u043D\u043E\u043A \u0438\u0437 \u0444\u043E\u0442\u043E \u0438\u043B\u0438 \u043A\u0430\u0440\u0442\u0438\u043D\u043A\u0438: \u043F\u043B\u043E\u0442\u0442\u0435\u0440 \u043D\u0430\u0440\u0438\u0441\u0443\u0435\u0442 \u0435\u0433\u043E \u043B\u0438\u043D\u0438\u044F\u043C\u0438", onClick: () => insertPicture(insert) }, "+ \u0440\u0438\u0441\u0443\u043D\u043E\u043A"),
+                h("button", { class: "chip", title: "\u0422\u0435\u043A\u0441\u0442 \u0441\u043E \u0441\u043A\u0440\u0438\u043D\u0448\u043E\u0442\u0430 \u0438\u043B\u0438 \u0444\u043E\u0442\u043E \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u044B: \u0440\u0430\u0441\u043F\u043E\u0437\u043D\u0430\u0442\u044C \u0438 \u043D\u0430\u043F\u0438\u0441\u0430\u0442\u044C \u043F\u043E\u0447\u0435\u0440\u043A\u043E\u043C, \u0430 \u043D\u0435 \u043E\u0431\u0432\u043E\u0434\u0438\u0442\u044C", disabled: () => !!ocrBusy.value, onClick: () => insertRecognized(insert) }, () => ocrBusy.value ?? '+ текст с картинки')),
             h("div", { class: "text-stats muted" }, () => {
                 const l = app.layout.value;
                 const n = l.pages.length;
                 return `${l.chars} знаков · ${n} стр. · ≈ ${fmtTime(app.totalEstimate.value)}`;
             }),
+            () => {
+                const miss = missingImages(app.text.value, app.images.value);
+                return miss.length ? h(Note, { kind: "warn" },
+                    "\u041D\u0435\u0442 \u0440\u0438\u0441\u0443\u043D\u043A\u043E\u0432: ",
+                    miss.join(', '),
+                    " \u2014 \u043D\u0430 \u0438\u0445 \u043C\u0435\u0441\u0442\u0435 \u043E\u0441\u0442\u0430\u043D\u0435\u0442\u0441\u044F \u043F\u0443\u0441\u0442\u043E\u0435 \u043C\u0435\u0441\u0442\u043E. \u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u0435 \u0444\u0430\u0439\u043B \u043B\u0435\u043A\u0446\u0438\u0438 \u0437\u0430\u043D\u043E\u0432\u043E \u043D\u0430 \u044D\u0442\u043E\u043C \u0443\u0441\u0442\u0440\u043E\u0439\u0441\u0442\u0432\u0435.") : null;
+            },
+            h("div", { class: "muted small" },
+                "\u00AB+ \u0442\u0435\u043A\u0441\u0442 \u0441 \u043A\u0430\u0440\u0442\u0438\u043D\u043A\u0438\u00BB \u0440\u0430\u0441\u043F\u043E\u0437\u043D\u0430\u0451\u0442 \u043F\u0435\u0447\u0430\u0442\u043D\u044B\u0439 \u0442\u0435\u043A\u0441\u0442 (\u0440\u0443\u0441\u0441\u043A\u0438\u0439 \u0438 \u043A\u0430\u0437\u0430\u0445\u0441\u043A\u0438\u0439) \u0438 \u0432\u0441\u0442\u0430\u0432\u043B\u044F\u0435\u0442 \u0435\u0433\u043E \u043A\u0430\u043A \u0442\u0435\u043A\u0441\u0442 \u2014 \u043F\u043E\u0447\u0435\u0440\u043A\u043E\u043C. \u0420\u0443\u043A\u043E\u043F\u0438\u0441\u043D\u044B\u0439 \u0442\u0435\u043A\u0441\u0442 \u0442\u0430\u043A \u043D\u0435 \u0447\u0438\u0442\u0430\u0435\u0442\u0441\u044F. \u0420\u0438\u0441\u0443\u043D\u043E\u043A \u2014 \u0441\u0442\u0440\u043E\u043A\u0430 ",
+                h("code", null, "![\u043F\u043E\u0434\u043F\u0438\u0441\u044C](img:\u2026)"),
+                ": \u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E \u0432\u043E \u0432\u0441\u044E \u0448\u0438\u0440\u0438\u043D\u0443, \u0434\u043E\u0431\u0430\u0432\u044C\u0442\u0435 \u00AB50%\u00BB, \u0447\u0442\u043E\u0431\u044B \u0441\u0434\u0435\u043B\u0430\u0442\u044C \u0443\u0436\u0435, \u00AB\u043A\u0430\u0440\u0430\u043D\u0434\u0430\u0448\u00BB \u2014 \u043D\u0430\u0440\u0438\u0441\u043E\u0432\u0430\u0442\u044C \u043A\u0430\u0440\u0430\u043D\u0434\u0430\u0448\u043E\u043C \u043F\u043E\u0441\u043B\u0435 \u0442\u0435\u043A\u0441\u0442\u0430 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u044B (\u043F\u043B\u043E\u0442\u0442\u0435\u0440 \u043F\u043E\u043F\u0440\u043E\u0441\u0438\u0442 \u0441\u043C\u0435\u043D\u0438\u0442\u044C \u0440\u0443\u0447\u043A\u0443), \u00AB\u043C\u0435\u0441\u0442\u043E\u00BB \u2014 \u043E\u0441\u0442\u0430\u0432\u0438\u0442\u044C \u043C\u0435\u0441\u0442\u043E \u043F\u043E\u0434 \u0440\u0430\u0441\u043F\u0435\u0447\u0430\u0442\u043A\u0443."),
             () => app.layout.value.missingChars.length ? (h(Note, { kind: "warn" },
                 "\u0412 \u0448\u0440\u0438\u0444\u0442\u0435 \u043D\u0435\u0442 \u0441\u0438\u043C\u0432\u043E\u043B\u043E\u0432: ",
                 app.layout.value.missingChars.join(' '),
@@ -113,12 +228,24 @@ export function TextTab() {
                 h(Icon, { name: "trash", size: 14 }))))))) : (h("div", { class: "muted small" }, "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u0435 \u0448\u0440\u0438\u0444\u0442, \u0431\u0443\u043C\u0430\u0433\u0443, \u0440\u0443\u0447\u043A\u0443 \u0438 \u0441\u043A\u043E\u0440\u043E\u0441\u0442\u044C \u043E\u0434\u043D\u043E\u0439 \u043A\u043D\u043E\u043F\u043A\u043E\u0439 \u2014 \u043D\u0430\u043F\u0440\u0438\u043C\u0435\u0440 \u00AB\u0424\u0438\u0437\u0438\u043A\u0430, \u043A\u043B\u0435\u0442\u043A\u0430, 4 \u043C\u043C\u00BB \u2014 \u0438 \u0432\u044B\u0431\u0438\u0440\u0430\u0439\u0442\u0435 \u0432 \u043E\u0434\u0438\u043D \u043A\u043B\u0438\u043A."))),
         h(Section, { title: "\u0414\u0440\u0443\u0433\u043E\u0435 \u043D\u0430 \u043B\u0438\u0441\u0442" },
             h("div", { class: "row wrap" },
-                h(Btn, { small: true, onClick: () => importSvg() },
+                h(Btn, { small: true, kind: "primary", onClick: () => importPicture() },
                     h(Icon, { name: "upload", size: 14 }),
-                    " \u0420\u0438\u0441\u0443\u043D\u043E\u043A SVG"),
+                    " \u041A\u0430\u0440\u0442\u0438\u043D\u043A\u0430 (PNG, JPG, SVG)"),
+                h(Btn, { small: true, onClick: () => importSvg(), title: "\u0414\u043B\u044F \u0447\u0435\u0440\u0442\u0435\u0436\u0435\u0439, \u0433\u0434\u0435 SVG \u0443\u0436\u0435 \u043D\u0430\u0440\u0438\u0441\u043E\u0432\u0430\u043D \u043B\u0438\u043D\u0438\u044F\u043C\u0438: \u043B\u0438\u043D\u0438\u0438 \u0431\u0435\u0440\u0443\u0442\u0441\u044F \u043A\u0430\u043A \u0435\u0441\u0442\u044C" },
+                    h(Icon, { name: "upload", size: 14 }),
+                    " SVG-\u0447\u0435\u0440\u0442\u0451\u0436 \u043A\u0430\u043A \u0435\u0441\u0442\u044C"),
                 h(Btn, { small: true, onClick: () => importGcode() },
                     h(Icon, { name: "upload", size: 14 }),
                     " \u0413\u043E\u0442\u043E\u0432\u044B\u0439 G-\u043A\u043E\u0434"),
                 h(Btn, { small: true, kind: "ghost", onClick: () => { if (confirm('Вернуть пример текста?'))
-                        app.text.value = SAMPLE_TEXT; } }, "\u041F\u0440\u0438\u043C\u0435\u0440 \u0442\u0435\u043A\u0441\u0442\u0430")))));
+                        app.text.value = SAMPLE_TEXT; } }, "\u041F\u0440\u0438\u043C\u0435\u0440 \u0442\u0435\u043A\u0441\u0442\u0430")),
+            h("div", { class: "row wrap", style: "margin-top:6px" },
+                h("span", { class: "small muted" }, "\u041A\u0430\u043A \u0440\u0438\u0441\u043E\u0432\u0430\u0442\u044C \u043A\u0430\u0440\u0442\u0438\u043D\u043A\u0443:"),
+                h(Segmented, { small: true, value: () => picMode.value, onChange: (v) => { picMode.value = v; if (lastPic && app.source.peek().kind === 'drawing')
+                        showPicture(); }, options: [
+                        { value: 'auto', label: 'Авто' },
+                        { value: 'lines', label: 'Линиями' },
+                        { value: 'outline', label: 'Контуром' },
+                    ] })),
+            h("div", { class: "muted small" }, "\u00AB\u041B\u0438\u043D\u0438\u044F\u043C\u0438\u00BB \u2014 \u0434\u043B\u044F \u0441\u0445\u0435\u043C \u0438 \u0440\u0438\u0441\u0443\u043D\u043A\u043E\u0432 \u043B\u0438\u043D\u0438\u0435\u0439, \u00AB\u041A\u043E\u043D\u0442\u0443\u0440\u043E\u043C\u00BB \u2014 \u0434\u043B\u044F \u0437\u0430\u043B\u0438\u0442\u044B\u0445 \u0441\u0438\u043B\u0443\u044D\u0442\u043E\u0432 \u0438 \u0436\u0438\u0440\u043D\u044B\u0445 \u0431\u0443\u043A\u0432, \u00AB\u0410\u0432\u0442\u043E\u00BB \u0440\u0435\u0448\u0430\u0435\u0442 \u0434\u043B\u044F \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u043F\u044F\u0442\u043D\u0430. \u041A\u043E\u043D\u0432\u0435\u0440\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0432 SVG \u0437\u0430\u0440\u0430\u043D\u0435\u0435 \u043D\u0435 \u043D\u0443\u0436\u043D\u043E."))));
 }
