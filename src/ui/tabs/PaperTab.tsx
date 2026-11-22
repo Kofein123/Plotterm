@@ -95,12 +95,31 @@ export function PaperTab() {
           value={() => !!p.value.spread}
           onChange={(v: boolean) => {
             const cur = p.peek();
-            // ширина листа — это весь разворот: включая разворот, удваиваем её, выключая — возвращаем
-            p.patch({ spread: v, width: v ? Math.round(cur.width * 2) : Math.max(50, Math.round(cur.width / 2)) });
+            const f = app.frame.peek();
+            // если лист откалиброван, его ширина И ЕСТЬ весь разворот — тогда ничего не удваиваем,
+            // просто делим его пополам; иначе ширина задана для одной страницы
+            const measured = f.ready && f.width >= 100 && Math.abs(f.width - cur.width) <= 2;
+            const width = measured ? cur.width : v ? Math.round(cur.width * 2) : Math.max(50, Math.round(cur.width / 2));
+            p.patch({ spread: v, width });
           }}
           label="Тетрадь лежит разворотом (две страницы)"
-          hint="Плоттер напишет сначала левую страницу, потом правую, и попросит перевернуть лист только после обеих. Ширина листа удваивается — задайте ширину всего разворота"
+          hint="Плоттер напишет сначала левую страницу, потом правую, и попросит перевернуть лист только после обеих. Ноль ставьте в левый верхний угол всего разворота, край — в правый нижний"
         />
+        {() => {
+          const pp = p.value;
+          if (!pp.spread) return null;
+          const f = app.frame.value;
+          const half = (pp.width / 2).toFixed(1);
+          return f.ready && Math.abs(f.width - pp.width) > 2 ? (
+            <Note kind="warn">
+              Ширина разворота в программе {pp.width} мм, а по калибровке лист {f.width.toFixed(1)} мм. Ноль и край должны стоять по углам
+              ВСЕГО разворота: ноль — левый верхний угол левой страницы, край — правый нижний угол правой.
+              <div class="row" style="margin-top:6px"><Btn small kind="primary" onClick={() => syncPaperToFrame()}>Взять размер с калибровки</Btn></div>
+            </Note>
+          ) : (
+            <div class="muted small">Разворот {pp.width} мм: страница — половина по {half} мм. Чётные страницы пишутся слева, нечётные справа.</div>
+          );
+        }}
         <Field label="Красная линия (широкое поле)" hint="правая страница тетради — линия справа, левая — слева; «Чередовать» переносит её сама через страницу">
           <Segmented
             value={bind(p, 'side').get}
