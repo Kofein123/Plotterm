@@ -110,6 +110,14 @@ export function PaperTab() {
           if (!pp.spread) return null;
           const f = app.frame.value;
           const half = (pp.width / 2).toFixed(1);
+          if (f.ready && f.height > f.width * 1.1)
+            return (
+              <Note kind="warn">
+                По калибровке лист {f.width.toFixed(1)} × {f.height.toFixed(1)} мм — он выше, чем шире, то есть измерена одна страница, а
+                не разворот. Повторите шаг 3: «Здесь край» ставится в правый нижний угол ПРАВОЙ страницы, тогда ширина станет примерно
+                вдвое больше высоты страницы.
+              </Note>
+            );
           return f.ready && Math.abs(f.width - pp.width) > 2 ? (
             <Note kind="warn">
               Ширина разворота в программе {pp.width} мм, а по калибровке лист {f.width.toFixed(1)} мм. Ноль и край должны стоять по углам
@@ -127,7 +135,8 @@ export function PaperTab() {
               // «Нет» — тетрадь без красной линии: поля с обеих сторон одинаковые, по узкому
               if (v !== 'none') return p.patch({ side: v });
               const cur = p.peek();
-              const narrow = Math.min(cur.marginLeft, cur.marginRight);
+              // поля одинаковые по узкому, но не впритык к краю: иначе буквы уезжают за лист
+              const narrow = Math.max(5, Math.min(cur.marginLeft, cur.marginRight));
               p.patch({ side: v, marginLeft: narrow, marginRight: narrow });
             }}
             options={[{ value: 'right', label: 'Справа' }, { value: 'left', label: 'Слева' }, { value: 'alternate', label: 'Чередовать' }, { value: 'none', label: 'Нет' }]} />

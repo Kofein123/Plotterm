@@ -5,7 +5,7 @@ import { vectorize, type VectorMode, type VectorDrawing } from '../../io/vectori
 import type { Gray } from '../../io/templateImport.ts';
 import { signal } from '../reactive.ts';
 import { imageFileToGray } from '../../io/image.ts';
-import { Btn, Icon, Note, Section, Segmented } from '../components.tsx';
+import { Btn, Icon, Note, Section, Segmented, Toggle } from '../components.tsx';
 import { readTextFile, svgToStrokes } from '../../io/importers.ts';
 import { recognizeImage } from '../../io/ocr.ts';
 import { pickFile, toast, fmtTime } from '../../app/notify.ts';
@@ -229,6 +229,16 @@ export function TextTab() {
         {() => {
           const miss = missingImages(app.text.value, app.images.value);
           return miss.length ? <Note kind="warn">Нет рисунков: {miss.join(', ')} — на их месте останется пустое место. Загрузите файл лекции заново на этом устройстве.</Note> : null;
+        }}
+        <Toggle
+          value={() => !!app.prefs.value.pencilImages}
+          onChange={(v: boolean) => app.prefs.patch({ pencilImages: v })}
+          label="Все рисунки — карандашом"
+          hint="Текст страницы пишется ручкой, потом плоттер остановится и попросит вставить карандаш, нарисует все схемы и попросит вернуть ручку"
+        />
+        {() => {
+          const pics = app.layout.value.pages.reduce((a, p) => a + p.images.filter((im) => im.tool === 'pencil').length, 0);
+          return pics ? <div class="muted small">Карандашом: {pics} рисунк{pics % 10 === 1 && pics % 100 !== 11 ? '' : 'ов'} — на каждой странице с ними будет пауза на смену ручки.</div> : null;
         }}
         <div class="muted small">
           «+ текст с картинки» распознаёт печатный текст (русский и казахский) и вставляет его как текст — почерком. Рукописный текст так не читается.

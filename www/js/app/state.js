@@ -53,14 +53,20 @@ export const app = createRoot(() => {
     const layout = signal({ pages: [], missingChars: [], chars: 0 });
     let layoutTimer;
     effect(() => {
-        const inp = { text: text.value, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin, images: images.value };
+        const inp = {
+            text: text.value, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin, images: images.value,
+            pencilImages: !!prefs.value.pencilImages,
+        };
         clearTimeout(layoutTimer);
         layoutTimer = setTimeout(() => {
             layout.value = layoutText(inp);
         }, 120);
     });
     /** Вёрстка прямо сейчас, без задержки: нужна, чтобы понять, на какой странице окажется рисунок. */
-    const layoutNow = (t) => layoutText({ text: t, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin, images: images.value });
+    const layoutNow = (t) => layoutText({
+        text: t, font: font.value, typo: typo.value, paper: paper.value, gridOrigin: calib.value.gridOrigin, images: images.value,
+        pencilImages: !!prefs.value.pencilImages,
+    });
     const machine = new Machine();
     const limits = computed(() => {
         const s = machine.settings.value;
